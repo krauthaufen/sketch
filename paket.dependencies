@@ -1,0 +1,18 @@
+framework: net45
+source https://api.nuget.org/v3/index.json
+source https://vrvis.myget.org/F/aardvark_public/api/v3/index.json
+
+nuget Aardvark.Base.FSharp               ~> 3.0.48
+nuget Aardvark.Base.Incremental          ~> 3.0.48
+nuget Aardvark.Base.Runtime              ~> 3.0.48
+nuget FShade.Core                        ~> 3.3.13
+nuget FShade                             ~> 3.3.13
+nuget FShade.Debug                       ~> 3.3.13
+
+group Build
+framework: net45
+content: none
+source https://vrvis.myget.org/F/aardvark_public/api/v3/index.json
+source https://api.nuget.org/v3/index.json
+
+github aardvark-platform/aardvark.fake:standalone

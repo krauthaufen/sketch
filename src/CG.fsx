@@ -3,101 +3,6 @@
 open Aardvark.Base
 open System.Runtime.CompilerServices
 
-let neg (v : float[]) = v |> Array.map (~-)
-
-let dot (l : float[]) (r : float[]) = 
-    Array.fold2 (fun s l r -> s + l*r) 0.0 l r
-    
-let mul (l : float[,]) (r : float[]) = 
-    Array.init (l.GetLength(0)) (fun row ->
-        let mutable sum = 0.0
-        for c in 0 .. r.Length - 1 do sum <- sum + l.[row, c] * r.[c]
-        sum
-    )
-
-let add (l : float[]) (r : float[]) = 
-    Array.map2 (+) l r
-    
-let mulS (l : float) (r : float[]) = 
-    Array.map (fun v -> l * v) r
-
-let arr2d (arr : float[][]) =
-    let r = arr.Length
-    if r = 0 then 
-        Array2D.zeroCreate 0 0
-    else
-        let c = arr.[0].Length
-        Array2D.init r c (fun r c -> arr.[r].[c])
-
-let inline doWhile (cond : unit -> bool) (action : unit -> unit) =
-    action()
-    while cond() do action()
-
-let cg (eps : float) (f' : float[] -> float[]) (f'' : float[] -> float[,]) (x : float[]) =
-
-
-    let n = 15
-    let imax = 50
-    let jmax = 10
-
-    let mutable i = 0
-    let mutable j = 0
-    let mutable k = 0
-    let mutable r = neg (f' x)
-    let mutable d = r
-    let mutable deltaOld = 0.0
-    let mutable deltaNew = dot r r
-    let mutable di = deltaNew
-    let mutable x = x
-    let mutable alpha = 0.0
-
-    let eps2 = eps * eps
-    while i < imax && deltaNew > eps2 do
-        printfn "r = %e" (sqrt deltaNew)
-        j <- 0
-        di <- dot d d 
-
-
-        doWhile (fun () -> j < jmax && alpha*di  > eps2) (fun () ->
-            let alpha = -(dot (f' x) d) / (dot d (mul (f'' x) d))
-            x <- add x (mulS alpha d)
-            printfn "x = %A" x
-            j <- j + 1
-        )
-
-        r <- neg (f' x)
-        deltaOld <- deltaNew
-        deltaNew <- dot r r
-        let beta = deltaNew / deltaOld
-        d <- add r (mulS beta d)
-        k <- k + 1
-        if k = n || dot r d < 0.0 then
-            d <- r
-            k <- 0
-
-        i <- i + 1
-
-        
-    printfn "iter = %A" i
-    x
-
-
-let f (x : double[]) =
-    x.[0]*x.[0] + (sin x.[1])**2.0
-
-let f' (x : double[]) =
-    [|
-        2.0 * x.[0]
-        2.0 * sin x.[1] * cos x.[1]
-    |]
-
-let f'' (x : double[]) =
-    arr2d [|
-        [| 2.0;                 0.0;                                            |]
-        [| 0.0;                 2.0 * (cos x.[1] ** 2.0 - sin x.[1] ** 2.0)     |]
-    |]
-
-
 
 
 type Num<'a> =
@@ -416,6 +321,19 @@ module NumInstances =
 
 [<AutoOpen>]
 module private PolynomialHelpers =
+
+    let arr2d (arr : float[][]) =
+        let r = arr.Length
+        if r = 0 then 
+            Array2D.zeroCreate 0 0
+        else
+            let c = arr.[0].Length
+            Array2D.init r c (fun r c -> arr.[r].[c])
+
+    let inline doWhile (cond : unit -> bool) (action : unit -> unit) =
+        action()
+        while cond() do action()
+
 
     let cross<'p, 'c when 'p : comparison> (num : Num<'c>) (l : MapExt<MapExt<string * 'p, int>, 'c>) (r : MapExt<MapExt<string * 'p, int>, 'c>) : MapExt<MapExt<string * 'p, int>, 'c> =
         let l = l |> MapExt.toList
@@ -903,6 +821,38 @@ type CG private() =
             }
 
         Polynomial.cgMinimize data eps name p x0
+        
+    [<Extension>]
+    static member Solve(p : Polynomial<int * int, 'v>, name : string, x0 : Matrix<'v>, eps : float) =
+        let data : Polynomial.Data<int * int, Matrix<'v>, 'v> = 
+            {
+                num     = NumInstances.instance<'v>
+                dim     = fun a -> (int a.Size.X, int a.Size.Y)
+                fetch   = fun (x,y) a -> a.[x,y]
+                init    = fun (x,y) f -> Matrix<'v>(V2l(x,y)).SetByCoord(fun (c : V2l) -> f(int c.X, int c.Y))
+                iter    = fun (sx, sy) f -> for i in 0 .. sx - 1 do for j in 0 .. sy - 1 do f (i,j)
+                zero    = (0,0)
+                clamp   = fun (lx, ly) (hx, hy) (vx, vy) -> (clamp lx (hx - 1) vx, clamp ly (hy - 1) vy)
+                add     = fun (lx, ly) (hx, hy) -> (lx + hx, ly + hy)
+            }
+
+        Polynomial.cgMinimize data eps name p x0
+        
+    [<Extension>]
+    static member Solve(p : Polynomial<int, 'v>, name : string, x0 : Vector<'v>, eps : float) =
+        let data : Polynomial.Data<int, Vector<'v>, 'v> = 
+            {
+                num     = NumInstances.instance<'v>
+                dim     = fun a -> int a.Size
+                fetch   = fun (x) a -> a.[x]
+                init    = fun (x) f -> Vector<'v>(x).SetByCoord(fun (c : int64) -> f(int c))
+                iter    = fun (sx) f -> for i in 0 .. sx - 1 do f i
+                zero    = 0
+                clamp   = fun (lx) (hx) (vx) -> (clamp lx (hx - 1) vx)
+                add     = (+)
+            }
+
+        Polynomial.cgMinimize data eps name p x0
 
     [<Extension>]
     static member Solve(p : Polynomial<int, 'v>, x0 : 'v[], eps : float) =
@@ -910,6 +860,14 @@ type CG private() =
 
     [<Extension>]
     static member Solve(p : Polynomial<int * int, 'v>, x0 : 'v[,], eps : float) =
+        CG.Solve(p, "x", x0, eps)
+        
+    [<Extension>]
+    static member Solve(p : Polynomial<int, 'v>, x0 : Vector<'v>, eps : float) =
+        CG.Solve(p, "x", x0, eps)
+
+    [<Extension>]
+    static member Solve(p : Polynomial<int * int, 'v>, x0 : Matrix<'v>, eps : float) =
         CG.Solve(p, "x", x0, eps)
 
     [<Extension>]
@@ -919,7 +877,14 @@ type CG private() =
     [<Extension>]
     static member Solve(p : Polynomial<int * int, 'v>, x0 : 'v[,]) =
         CG.Solve(p, "x", x0, 1E-8)
-
+        
+    [<Extension>]
+    static member Solve(p : Polynomial<int, 'v>, x0 : Vector<'v>) =
+        CG.Solve(p, "x", x0, 1E-8)
+        
+    [<Extension>]
+    static member Solve(p : Polynomial<int * int, 'v>, x0 : Matrix<'v>) =
+        CG.Solve(p, "x", x0, 1E-8)
 
 let grad = 0.25 * (-x<float>.[-1] + 2.0*x.[0] - x.[1]) ** 2
 

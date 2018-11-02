@@ -887,10 +887,9 @@ type CG private() =
         CG.Solve(p, "x", x0, 1E-8)
 
 let grad = 0.25 * (-x<float>.[-1] + 2.0*x.[0] - x.[1]) ** 2
-
 let grad2d = 0.125 * (4.0*x<float>.[0,0] - x.[1,0] - x.[-1,0] - x.[0,1] - x.[0,-1]) ** 2
 
-let x2 =
+let x02d =
     arr2d [|
         [| 1.0; 1.0; 1.0; 1.0; 1.0 |]
         [| 1.0; 3.0; 5.0; 3.0; 1.0 |]
@@ -900,3 +899,9 @@ let x2 =
     |]
 
 let x0 = [| 1.0; 2.0; 3.0; 2.0; 1.0 |]
+
+let solve1d() =
+    grad.Solve x0
+
+let solve2d() =
+    grad2d.Solve x02d

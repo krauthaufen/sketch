@@ -1,3 +1,5 @@
-#r @"..\packages\Aardvark.Base\lib\net45\Aardvark.Base.dll"
-#r @"..\packages\Aardvark.Base.FSharp\lib\net45\Aardvark.Base.TypeProviders.dll"
-#r @"..\packages\Aardvark.Base.FSharp\lib\net45\Aardvark.Base.FSharp.dll"
+#r "netstandard.dll"
+#r @"..\packages\Aardvark.Base.Telemetry\lib\netstandard2.0\Aardvark.Base.Telemetry.dll"
+#r @"..\packages\Aardvark.Base\lib\netstandard2.0\Aardvark.Base.dll"
+#r @"..\packages\Aardvark.Base.FSharp\lib\netstandard2.0\Aardvark.Base.TypeProviders.dll"
+#r @"..\packages\Aardvark.Base.FSharp\lib\netstandard2.0\Aardvark.Base.FSharp.dll"

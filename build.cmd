@@ -14,6 +14,7 @@ if NOT exist paket.lock (
 )
 
 .paket\paket.exe restore
+.paket\paket.exe generate-load-scripts
 if errorlevel 1 (
   exit /b %errorlevel%
 )

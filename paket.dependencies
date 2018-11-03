@@ -4,9 +4,17 @@ source https://api.nuget.org/v3/index.json
 nuget Aardvark.Base.FSharp               ~> 4.2.4
 nuget Aardvark.Base.Incremental          ~> 4.2.4
 nuget Aardvark.Base.Runtime              ~> 4.2.4
+
 nuget FShade.Core                        ~> 4.2.24
 nuget FShade                             ~> 4.2.24
 nuget FShade.Debug                       ~> 4.2.24
+
+nuget Aardvark.Base.Rendering            ~> 4.6.0
+nuget Aardvark.Application.Utilities     ~> 4.6.0
+nuget Aardvark.SceneGraph                ~> 4.6.0
+nuget Aardvark.GPGPU                     ~> 4.6.0
+
+
 
 group Build
 framework: net45

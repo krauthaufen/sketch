@@ -803,16 +803,16 @@ module ReflectedReal =
     open FShade 
 
     [<GLSLIntrinsic("(1.0 / 0.0)")>]
-    let pinf() : float = System.Double.PositiveInfinity
+    let pinf() : float = onlyInShaderCode "pinf" //System.Double.PositiveInfinity
     
     [<GLSLIntrinsic("(-1.0 / 0.0)")>]
-    let ninf() : float = System.Double.NegativeInfinity
+    let ninf() : float = onlyInShaderCode "ninf" //System.Double.NegativeInfinity
     
     [<GLSLIntrinsic("(1.0 / 0.0)")>]
-    let fpinf() : float32 = System.Single.PositiveInfinity
+    let fpinf() : float32 = onlyInShaderCode "pinf" //System.Single.PositiveInfinity
     
     [<GLSLIntrinsic("(-1.0 / 0.0)")>]
-    let fninf() : float32 = System.Single.NegativeInfinity
+    let fninf() : float32 = onlyInShaderCode "ninf" //System.Single.NegativeInfinity
 
     let Cfloat64 =
         {

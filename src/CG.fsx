@@ -2,8 +2,19 @@
 
 open Aardvark.Base
 open System.Runtime.CompilerServices
+open Aardvark.Base.Rendering
+open Microsoft.FSharp.Quotations
+open Aardvark.Rendering.Vulkan
 
-
+type Marker = Marker
+do
+    let dir = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "obj")
+    let info = System.IO.DirectoryInfo dir
+    if not info.Exists then info.Create()
+    System.AppDomain.CurrentDomain.SetData("APPBASE", dir)
+    System.Environment.CurrentDirectory <- dir
+    Ag.initialize()
+    Aardvark.Init()
 
 type Num<'a> =
     {
@@ -905,3 +916,428 @@ let solve1d() =
 
 let solve2d() =
     grad2d.Solve x02d
+
+
+type RNum<'a> =
+    {
+        zero    : Expr<'a>
+        one     : Expr<'a>
+        add     : Expr<'a -> 'a -> 'a>
+        mul     : Expr<'a -> 'a -> 'a>
+    }
+
+module ReflectedNum =
+    let Cfloat64 =
+        {
+            zero    = <@ 0.0 @>
+            one     = <@ 1.0 @>
+            add     = <@ (+) @>
+            mul     = <@ (*) @>
+        }
+
+    let Cfloat32 =
+        {
+            zero    = <@ 0.0f @>
+            one     = <@ 1.0f @>
+            add     = <@ (+) @>
+            mul     = <@ (*) @>
+        }
+
+    let internal table =
+        LookupTable.lookupTable [
+            typeof<float32>,    Cfloat32 :> obj
+            typeof<float>,      Cfloat64 :> obj
+        ]
+
+    let instance<'a> = table typeof<'a> |> unbox<RNum<'a>>
+
+module CgSolverShader =
+    open FShade
+
+    [<Literal>]
+    let foldSize = 128
+    
+    [<Literal>]
+    let halfFoldSize = 64
+
+
+    [<LocalSize(X = halfFoldSize)>]
+    let dot1d (zero : Expr<'b>) (mul : Expr<'a -> 'a -> 'b>) (add : Expr<'b -> 'b -> 'b>) (cnt : int) (l : 'a[]) (r : 'a[]) (result : 'b[]) =
+        compute {
+            let mem = allocateShared<'b> foldSize
+            let tid = getLocalId().X
+            let gid = getWorkGroupId().X
+            
+            // index calculations
+            let lai = 2 * tid
+            let lbi = lai + 1
+            let ai  = foldSize * gid + lai
+            let bi  = ai + 1 
+            
+            // load existing values into local memory
+            mem.[lai] <- if ai < cnt then (%mul) l.[ai] r.[ai] else %zero
+            mem.[lbi] <- if bi < cnt then (%mul) l.[bi] r.[bi] else %zero
+            barrier()
+            
+            // sum the local values from right to left
+            let mutable s = halfFoldSize
+            while s > 0 do
+                if tid < s then
+                    mem.[tid] <- (%add) mem.[tid] mem.[tid + s]
+
+                s <- s >>> 1
+                barrier()
+                
+            // store the overall sum in the result-buffer
+            if tid = 0 then
+                result.[gid] <- mem.[0]
+
+        }
+    
+
+    let lSampler =
+        sampler2d {
+            texture uniform?l
+            addressU WrapMode.Border
+            addressV WrapMode.Border
+            filter Filter.MinMagLinear
+        }
+
+    let rSampler =
+        sampler2d {
+            texture uniform?r
+            addressU WrapMode.Border
+            addressV WrapMode.Border
+            filter Filter.MinMagLinear
+        }
+
+    [<LocalSize(X = 8, Y = 8)>]
+    let sum2d (zero : Expr<'b>) (addV4 : Expr<V4d -> V4d -> 'b>) (add : Expr<'b -> 'b -> 'b>) (lLevel : int) (result : 'b[]) =
+        compute {
+            let mem = allocateShared<'b> 128
+
+            let size = lSampler.GetSize(lLevel)
+            let rcpSize = 1.0 / V2d size
+
+            let lid = getLocalId().XY
+            let gid = getWorkGroupId().XY
+            let groups = getWorkGroupCount().XY
+
+            // index calculations
+            let id = gid * 16 + lid * 2
+            let tc00 = (V2d id + V2d.Half) * rcpSize
+            let tc01 = tc00 + V2d(rcpSize.X, 0.0)
+            let tc10 = tc00 + V2d(0.0, rcpSize.Y)
+            let tc11 = tc00 + rcpSize
+            let tid = lid.X + 8 * lid.Y
+
+            // load existing values into local memory
+            let v0 =
+                (%addV4) (lSampler.SampleLevel(tc00, float lLevel)) (lSampler.SampleLevel(tc01, float lLevel))
+                
+            let v1 =
+                (%addV4) (lSampler.SampleLevel(tc10, float lLevel)) (lSampler.SampleLevel(tc11, float lLevel)) 
+
+            mem.[tid * 2 + 0] <- v0
+            mem.[tid * 2 + 1] <- v1
+            barrier()
+            
+            // sum the local values from right to left
+            let mutable s = 64
+            while s > 0 do
+                if tid < s then
+                    mem.[tid] <- (%add) mem.[tid] mem.[tid + s]
+
+                s <- s >>> 1
+                barrier()
+                
+            // store the overall sum in the result-buffer
+            if tid = 0 then
+                result.[gid.X + groups.X * gid.Y] <- mem.[0]
+
+        }
+       
+    [<LocalSize(X = 8, Y = 8)>]
+    let dot2d (zero : Expr<'b>) (mul : Expr<V4d -> V4d -> 'b>) (add : Expr<'b -> 'b -> 'b>) (lLevel : int) (rLevel : int) (result : 'b[]) =
+        compute {
+            let mem = allocateShared<'b> 128
+
+            let size = lSampler.GetSize(lLevel)
+            let rcpSize = 1.0 / V2d size
+
+            let lid = getLocalId().XY
+            let gid = getWorkGroupId().XY
+            let groups = getWorkGroupCount().XY
+
+            // index calculations
+            let id = gid * 16 + lid * 2
+            let tc00 = (V2d id + V2d.Half) * rcpSize
+            let tc01 = tc00 + V2d(rcpSize.X, 0.0)
+            let tc10 = tc00 + V2d(0.0, rcpSize.Y)
+            let tc11 = tc00 + rcpSize
+            let tid = lid.X + 8 * lid.Y
+
+            // load existing values into local memory
+            let v0 =
+                (%add) 
+                    ((%mul) (lSampler.SampleLevel(tc00, float lLevel)) (rSampler.SampleLevel(tc00, float rLevel)))
+                    ((%mul) (lSampler.SampleLevel(tc01, float lLevel)) (rSampler.SampleLevel(tc01, float rLevel)))
+                
+            let v1 =
+                (%add) 
+                    ((%mul) (lSampler.SampleLevel(tc10, float lLevel)) (rSampler.SampleLevel(tc10, float rLevel)))
+                    ((%mul) (lSampler.SampleLevel(tc11, float lLevel)) (rSampler.SampleLevel(tc11, float rLevel)))
+
+            mem.[tid * 2 + 0] <- v0
+            mem.[tid * 2 + 1] <- v1
+            barrier()
+            
+            // sum the local values from right to left
+            let mutable s = 64
+            while s > 0 do
+                if tid < s then
+                    mem.[tid] <- (%add) mem.[tid] mem.[tid + s]
+
+                s <- s >>> 1
+                barrier()
+                
+            // store the overall sum in the result-buffer
+            if tid = 0 then
+                result.[gid.X + groups.X * gid.Y] <- mem.[0]
+
+        }
+              
+    [<LocalSize(X = halfFoldSize)>]
+    let sum1d (zero : Expr<'b>) (add : Expr<'b -> 'b -> 'b>) (cnt : int) (arr : 'b[]) (result : 'b[]) =
+        compute {
+            let mem = allocateShared<'b> foldSize
+            let tid = getLocalId().X
+            let gid = getWorkGroupId().X
+            
+            // index calculations
+            let lai = 2 * tid
+            let lbi = lai + 1
+            let ai  = foldSize * gid + lai
+            let bi  = ai + 1 
+            
+            // load existing values into local memory
+            mem.[lai] <- if ai < cnt then arr.[ai] else %zero
+            mem.[lbi] <- if bi < cnt then arr.[bi] else %zero
+            barrier()
+
+            // sum the local values from right to left
+            let mutable s = halfFoldSize
+            while s > 0 do
+                if tid < s then
+                    mem.[tid] <- (%add) mem.[tid] mem.[tid + s]
+                s <- s >>> 1
+                barrier()
+
+            // store the overall sum in the result-buffer
+            if tid = 0 then
+                result.[gid] <- mem.[0]
+
+        }
+
+
+type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime, conv : Expr<V4d -> 'a>) =
+    static let num = NumInstances.instance<'a>
+    static let rnum = ReflectedNum.instance<'a>
+
+    let v4Mul = <@ fun a b -> (%rnum.mul) ((%conv) a) ((%conv) b) @>
+    let v4Add = <@ fun a b -> (%rnum.add) ((%conv) a) ((%conv) b) @>
+
+    static let ceilDiv (a : int) (b : int) =
+        if a % b = 0 then a / b
+        else 1 + a / b
+    
+    static let ceilDiv2 (a : V2i) (b : V2i) =
+        V2i(
+            ceilDiv a.X b.X,
+            ceilDiv a.Y b.Y
+        )
+    
+    let dot1d = runtime.CreateComputeShader (CgSolverShader.dot1d rnum.zero rnum.mul rnum.add)
+    let dot2d = runtime.CreateComputeShader (CgSolverShader.dot2d rnum.zero v4Mul rnum.add)
+    let sum1d = runtime.CreateComputeShader (CgSolverShader.sum1d rnum.zero rnum.add)
+    let sum2d = runtime.CreateComputeShader (CgSolverShader.sum2d rnum.zero v4Add rnum.add)
+
+    member x.Sum(v : IBuffer<'a>) =
+        if v.Count <= 0 then
+            num.zero
+
+        elif v.Count = 1 then
+            let arr = Array.zeroCreate 1
+            v.Download(arr)
+            arr.[0]
+
+        else
+            let resCnt = ceilDiv v.Count CgSolverShader.foldSize
+            use res = runtime.CreateBuffer<'a>(resCnt)
+            use input = runtime.NewInputBinding sum1d
+            input.["arr"] <- v
+            input.["cnt"] <- v.Count
+            input.["result"] <- res
+            input.Flush()
+            
+            runtime.Run [
+                ComputeCommand.Bind sum1d
+                ComputeCommand.SetInput input
+                ComputeCommand.Dispatch resCnt
+                ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
+            ]
+
+            x.Sum(res)
+
+    member x.Sum(v : ITextureSubResource) =
+        let size = v.Size.XY
+        
+        if size.AnySmallerOrEqual 0 then
+            num.zero
+            
+        else
+            let resCnt = ceilDiv2 size (V2i(16,16))
+            
+            use res = runtime.CreateBuffer<'a>(resCnt.X * resCnt.Y)
+            use input = runtime.NewInputBinding sum2d
+            input.["l"] <- v.Texture
+            input.["lLevel"] <- v.Level
+            input.["result"] <- res
+            input.Flush()
+
+            runtime.Run [
+                ComputeCommand.Bind sum2d
+                ComputeCommand.SetInput input
+                ComputeCommand.Dispatch resCnt
+                ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
+            ]
+
+            x.Sum(res)
+
+    member x.Dot(l : IBuffer<'a>, r : IBuffer<'a>) =
+        if l.Count <> r.Count then failwith "buffers have mismatching size"
+        let cnt = l.Count
+        
+        if cnt <= 0 then
+            num.zero
+
+        elif cnt = 1 then
+            let la = Array.zeroCreate 1
+            let ra = Array.zeroCreate 1
+            l.Download(la)
+            r.Download(ra)
+            num.mul la.[0] ra.[0]
+
+        else
+            let resCnt = ceilDiv cnt CgSolverShader.foldSize
+            
+            use res = runtime.CreateBuffer<'a>(resCnt)
+            use input = runtime.NewInputBinding dot1d
+            input.["l"] <- l
+            input.["r"] <- r
+            input.["cnt"] <- l.Count
+            input.["result"] <- res
+            input.Flush()
+
+            runtime.Run [
+                ComputeCommand.Bind dot1d
+                ComputeCommand.SetInput input
+                ComputeCommand.Dispatch resCnt
+                ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
+            ]
+
+            x.Sum(res)
+
+    //member inline x.Length(l : IBuffer<'a>) =
+    //    let r = x.Dot(l,l)
+    //    sqrt r
+
+    member x.Dot(l : ITextureSubResource, r : ITextureSubResource) =  
+        if l.Size.XY <> r.Size.XY then failwith "buffers have mismatching size"
+        let size = l.Size.XY
+        
+        if size.AnySmallerOrEqual 0 then
+            num.zero
+            
+        else
+            let resCnt = ceilDiv2 size (V2i(16,16))
+            
+            use res = runtime.CreateBuffer<'a>(resCnt.X * resCnt.Y)
+            use input = runtime.NewInputBinding dot2d
+            input.["l"] <- l.Texture
+            input.["r"] <- r.Texture
+            input.["lLevel"] <- l.Level
+            input.["rLevel"] <- r.Level
+            input.["result"] <- res
+            input.Flush()
+
+            runtime.Run [
+                ComputeCommand.Bind dot2d
+                ComputeCommand.SetInput input
+                ComputeCommand.Dispatch resCnt
+                ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
+            ]
+
+            x.Sum(res)
+
+    member x.Dot(l : PixImage, r : PixImage) =
+        let tl = runtime.CreateTexture (l.Size, TextureFormat.ofPixFormat l.PixFormat TextureParams.empty, 1, 1)
+        let tr = runtime.CreateTexture (r.Size, TextureFormat.ofPixFormat r.PixFormat TextureParams.empty, 1, 1)
+        runtime.Upload(tl, 0, 0, l)
+        runtime.Upload(tr, 0, 0, r)
+        
+        try
+            x.Dot(tl.[TextureAspect.Color, 0, 0], tr.[TextureAspect.Color, 0, 0])
+        finally
+            runtime.DeleteTexture tl
+            runtime.DeleteTexture tr
+
+    member x.Sum(v : PixImage) =
+        let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
+        runtime.Upload(tl, 0, 0, v)
+        try x.Sum(tl.[TextureAspect.Color, 0, 0])
+        finally runtime.DeleteTexture tl
+
+
+let app = new HeadlessVulkanApplication()
+let runtime = app.Runtime
+let s = CgSolver<float32>(runtime, <@ fun v -> float32 v.X @>)
+
+let dot (a : float32[]) (b : float32[]) =
+    use a = runtime.CreateBuffer a
+    use b = runtime.CreateBuffer b
+    s.Dot(a,b)
+
+let testDot () =
+    use a = runtime.CreateBuffer (Array.init 128 float32)
+    use b = runtime.CreateBuffer (Array.init 128 float32)
+    s.Dot(a,b)
+
+let testImageDot() = 
+    let rand = RandomSystem()
+    let size = V2i(10 + rand.UniformInt(300), 10 + rand.UniformInt(300))
+    let img = PixImage<byte>(Col.Format.RGBA, size)
+    img.GetMatrix<C4b>().SetByIndex (fun _ -> rand.UniformC3f().ToC4b()) |> ignore
+    
+    let gpu = s.Dot(img, img)
+    let cpu =
+        let r = img.GetChannel(Col.Channel.Red)
+        r.InnerProduct(r, (fun l r -> (float32 l / 255.0f) * (float32 r / 255.0f)), 0.0f, (+))
+    printfn "size: %A" size
+    printfn "gpu:  %.5e" gpu
+    printfn "cpu:  %.5e" cpu
+
+    
+let testImageSum() = 
+    let rand = RandomSystem()
+    let size = V2i(10 + rand.UniformInt(300), 10 + rand.UniformInt(300))
+    let img = PixImage<byte>(Col.Format.RGBA, size)
+    img.GetMatrix<C4b>().SetByIndex (fun _ -> rand.UniformC3f().ToC4b()) |> ignore
+    
+    let gpu = s.Sum(img)
+    let cpu =
+        let r = img.GetChannel(Col.Channel.Red)
+        r.InnerProduct(r, (fun l r -> (float32 l / 255.0f)), 0.0f, (+))
+    printfn "size: %A" size
+    printfn "gpu:  %.5e" gpu
+    printfn "cpu:  %.5e" cpu

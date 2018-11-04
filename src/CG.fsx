@@ -6,7 +6,6 @@ open Aardvark.Base.Rendering
 open Microsoft.FSharp.Quotations
 open Aardvark.Rendering.Vulkan
 
-type Marker = Marker
 do
     let dir = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "obj")
     let info = System.IO.DirectoryInfo dir
@@ -16,7 +15,7 @@ do
     Ag.initialize()
     Aardvark.Init()
 
-type Num<'a> =
+type Real<'a> =
     {
         zero : 'a
         one : 'a
@@ -26,6 +25,7 @@ type Num<'a> =
         div : 'a -> 'a -> 'a
         neg : 'a -> 'a
         pow : 'a -> int -> 'a
+        sqrt : 'a -> 'a
         fromInt : int -> 'a
         fromFloat : float -> 'a
         isTiny : 'a -> bool
@@ -33,41 +33,7 @@ type Num<'a> =
         isPositive : 'a -> bool
     }
 
-module NumInstances =
-    
-    let Cint32 =
-        {
-            zero = 0
-            one = 1
-            add = (+)
-            sub = (-)
-            mul = (*)
-            div = (/)
-            neg = (~-)
-            pow = fun v n -> pown v n
-            fromInt = id
-            fromFloat = int
-            isTiny = fun v -> v = 0
-            isTinyEps = fun _ v -> v = 0
-            isPositive = fun v -> v > 0
-        }
-   
-    let Cint64 =
-        {
-            zero = 0L
-            one = 1L
-            add = (+)
-            sub = (-)
-            mul = (*)
-            div = (/)
-            neg = (~-)
-            pow = fun v n -> pown v n
-            fromInt = int64
-            fromFloat = int64
-            isTiny = fun v -> v = 0L
-            isTinyEps = fun _ v -> v = 0L
-            isPositive = fun v -> v > 0L
-        }
+module RealInstances =
 
     let Cfloat32 =
         {
@@ -79,6 +45,7 @@ module NumInstances =
             div = (/)
             neg = (~-)
             pow = fun v n -> pown v n
+            sqrt = sqrt
             fromInt = float32
             fromFloat = float32
             isTiny = Fun.IsTiny 
@@ -96,45 +63,12 @@ module NumInstances =
             div = (/)
             neg = (~-)
             pow = fun v n -> pown v n
+            sqrt = sqrt
             fromInt = float
             fromFloat = float
             isTiny = Fun.IsTiny 
             isTinyEps = fun e v -> Fun.IsTiny(v, e)
             isPositive = fun v -> v > 0.0
-        }
-
-    let CV2i =
-        {
-            zero = V2i.Zero
-            one = V2i.II
-            add = (+)
-            sub = (-)
-            mul = (*)
-            div = (/)
-            neg = (~-)
-            pow = fun v n -> V2i(pown v.X n, pown v.Y n)
-            fromInt = fun v -> V2i(v,v)
-            fromFloat = fun v -> V2i(int v, int v)
-            isTiny = fun v -> v = V2i.Zero
-            isTinyEps = fun _ v -> v = V2i.Zero
-            isPositive = fun v -> v.AllGreater 0
-        }
-        
-    let CV2l =
-        {
-            zero = V2l.Zero
-            one = V2l.II
-            add = (+)
-            sub = (-)
-            mul = (*)
-            div = (/)
-            neg = (~-)
-            pow = fun v n -> V2l(pown v.X n, pown v.Y n)
-            fromInt = fun v -> V2l(int64 v, int64 v)
-            fromFloat = fun v -> V2l(int64 v, int64 v)
-            isTiny = fun v -> v = V2l.Zero
-            isTinyEps = fun _ v -> v = V2l.Zero
-            isPositive = fun v -> v.AllGreater 0L
         }
 
     let CV2f =
@@ -147,6 +81,7 @@ module NumInstances =
             div = (/)
             neg = (~-)
             pow = fun v n -> V2f(pown v.X n, pown v.Y n)
+            sqrt = fun v -> V2f(sqrt v.X, sqrt v.Y)
             fromInt = fun v -> V2f(float32 v, float32 v)
             fromFloat = fun v -> V2f(float32 v, float32 v)
             isTiny = fun v -> Fun.IsTiny(v.X) && Fun.IsTiny(v.Y)
@@ -164,6 +99,7 @@ module NumInstances =
             div = (/)
             neg = (~-)
             pow = fun v n -> V2d(pown v.X n, pown v.Y n)
+            sqrt = fun v -> V2d(sqrt v.X, sqrt v.Y)
             fromInt = fun v -> V2d(float v, float v)
             fromFloat = fun v -> V2d(v, v)
             isTiny = fun v -> Fun.IsTiny(v.X) && Fun.IsTiny(v.Y)
@@ -171,41 +107,6 @@ module NumInstances =
             isPositive = fun v -> v.AllGreater 0.0
         }
 
-
-    let CV3i =
-        {
-            zero = V3i.Zero
-            one = V3i.III
-            add = (+)
-            sub = (-)
-            mul = (*)
-            div = (/)
-            neg = (~-)
-            pow = fun v n -> V3i(pown v.X n, pown v.Y n, pown v.Z n)
-            fromInt = fun v -> V3i(v,v,v)
-            fromFloat = fun v -> V3i(int v, int v, int v)
-            isTiny = fun v -> v = V3i.Zero
-            isTinyEps = fun _ v -> v = V3i.Zero
-            isPositive = fun v -> v.AllGreater 0
-        }
-  
-    let CV3l =
-        {
-            zero = V3l.Zero
-            one = V3l.III
-            add = (+)
-            sub = (-)
-            mul = (*)
-            div = (/)
-            neg = (~-)
-            pow = fun v n -> V3l(pown v.X n, pown v.Y n, pown v.Z n)
-            fromInt = fun v -> V3l(int64 v, int64 v, int64 v)
-            fromFloat = fun v -> V3l(int64 v, int64 v, int64 v)
-            isTiny = fun v -> v = V3l.Zero
-            isTinyEps = fun _ v -> v = V3l.Zero
-            isPositive = fun v -> v.AllGreater 0L
-        }
-  
     let CV3f =
         {
             zero = V3f.Zero
@@ -216,6 +117,7 @@ module NumInstances =
             div = (/)
             neg = (~-)
             pow = fun v n -> V3f(pown v.X n, pown v.Y n, pown v.Z n)
+            sqrt = fun v -> V3f(sqrt v.X, sqrt v.Y, sqrt v.Z)
             fromInt = fun v -> V3f(float32 v, float32 v, float32 v)
             fromFloat = fun v -> V3f(float32 v, float32 v, float32 v)
             isTiny = fun v -> Fun.IsTiny(v.X) && Fun.IsTiny(v.Y) && Fun.IsTiny(v.Z)
@@ -233,6 +135,7 @@ module NumInstances =
             div = (/)
             neg = (~-)
             pow = fun v n -> V3d(pown v.X n, pown v.Y n, pown v.Z n)
+            sqrt = fun v -> V3d(sqrt v.X, sqrt v.Y, sqrt v.Z)
             fromInt = fun v -> V3d(float v, float v, float v)
             fromFloat = fun v -> V3d(v, v, v)
             isTiny = fun v -> Fun.IsTiny(v.X) && Fun.IsTiny(v.Y) && Fun.IsTiny(v.Z)
@@ -240,40 +143,6 @@ module NumInstances =
             isPositive = fun v -> v.AllGreater 0.0
         }
 
-    let CV4i =
-        {
-            zero = V4i.Zero
-            one = V4i.IIII
-            add = (+)
-            sub = (-)
-            mul = (*)
-            div = (/)
-            neg = (~-)
-            pow = fun v n -> V4i(pown v.X n, pown v.Y n, pown v.Z n, pown v.W n)
-            fromInt = fun v -> V4i(v,v,v,v)
-            fromFloat = fun v -> V4i(int v, int v, int v, int v)
-            isTiny = fun v -> v = V4i.Zero
-            isTinyEps = fun _ v -> v = V4i.Zero
-            isPositive = fun v -> v.AllGreater 0
-        }
-  
-    let CV4l =
-        {
-            zero = V4l.Zero
-            one = V4l.IIII
-            add = (+)
-            sub = (-)
-            mul = (*)
-            div = (/)
-            neg = (~-)
-            pow = fun v n -> V4l(pown v.X n, pown v.Y n, pown v.Z n, pown v.W n)
-            fromInt = fun v -> V4l(v,v,v,v)
-            fromFloat = fun v -> V4l(int64 v, int64 v, int64 v, int64 v)
-            isTiny = fun v -> v = V4l.Zero
-            isTinyEps = fun _ v -> v = V4l.Zero
-            isPositive = fun v -> v.AllGreater 0L
-        }
-  
     let CV4f =
         {
             zero = V4f.Zero
@@ -284,6 +153,7 @@ module NumInstances =
             div = (/)
             neg = (~-)
             pow = fun v n -> V4f(pown v.X n, pown v.Y n, pown v.Z n, pown v.W n)
+            sqrt = fun v -> V4f(sqrt v.X, sqrt v.Y, sqrt v.Z, sqrt v.W)
             fromInt = fun v -> V4f(float32 v, float32 v, float32 v, float32 v)
             fromFloat = fun v -> V4f(float32 v, float32 v, float32 v, float32 v)
             isTiny = fun v -> Fun.IsTiny v.X && Fun.IsTiny v.Y && Fun.IsTiny v.Z && Fun.IsTiny v.W
@@ -301,6 +171,7 @@ module NumInstances =
             div = (/)
             neg = (~-)
             pow = fun v n -> V4d(pown v.X n, pown v.Y n, pown v.Z n, pown v.W n)
+            sqrt = fun v -> V4d(sqrt v.X, sqrt v.Y, sqrt v.Z, sqrt v.W)
             fromInt = fun v -> V4d(float v, float v, float v, float v)
             fromFloat = fun v -> V4d(v, v, v, v)
             isTiny = fun v -> Fun.IsTiny v.X && Fun.IsTiny v.Y && Fun.IsTiny v.Z && Fun.IsTiny v.W
@@ -310,25 +181,17 @@ module NumInstances =
 
     let internal table =
         LookupTable.lookupTable [
-            typeof<int>,        Cint32 :> obj
-            typeof<int64>,      Cint64 :> obj
             typeof<float32>,    Cfloat32 :> obj
             typeof<float>,      Cfloat64 :> obj
-            typeof<V2i>,        CV2i :> obj
-            typeof<V2l>,        CV2l :> obj
             typeof<V2f>,        CV2f :> obj
             typeof<V2d>,        CV2d :> obj
-            typeof<V3i>,        CV3i :> obj
-            typeof<V3l>,        CV3l :> obj
             typeof<V3f>,        CV3f :> obj
             typeof<V3d>,        CV3d :> obj
-            typeof<V4i>,        CV4i :> obj
-            typeof<V4l>,        CV4l :> obj
             typeof<V4f>,        CV4f :> obj
             typeof<V4d>,        CV4d :> obj
         ]
 
-    let instance<'a> = table typeof<'a> |> unbox<Num<'a>>
+    let instance<'a> = table typeof<'a> |> unbox<Real<'a>>
 
 [<AutoOpen>]
 module private PolynomialHelpers =
@@ -346,7 +209,7 @@ module private PolynomialHelpers =
         while cond() do action()
 
 
-    let cross<'p, 'c when 'p : comparison> (num : Num<'c>) (l : MapExt<MapExt<string * 'p, int>, 'c>) (r : MapExt<MapExt<string * 'p, int>, 'c>) : MapExt<MapExt<string * 'p, int>, 'c> =
+    let cross<'p, 'c when 'p : comparison> (num : Real<'c>) (l : MapExt<MapExt<string * 'p, int>, 'c>) (r : MapExt<MapExt<string * 'p, int>, 'c>) : MapExt<MapExt<string * 'p, int>, 'c> =
         let l = l |> MapExt.toList
         let r = r |> MapExt.toList
 
@@ -403,7 +266,7 @@ type Polynomial<'p, 'c when 'p : comparison> (coeff : MapExt<MapExt<string * 'p,
             | Some v -> v.Value
             | None -> 0
 
-    static let num = NumInstances.instance<'c>
+    static let num = RealInstances.instance<'c>
 
     static let (<+>) (l : 'c) (r : 'c) = num.add l r
     static let (<*>) l r = num.mul l r
@@ -592,7 +455,7 @@ module PolynomialExtensions =
 
     [<Struct>]
     type PolynomialParam<'a> (name : string)=
-        static let num = NumInstances.instance<'a>
+        static let num = RealInstances.instance<'a>
 
         member x.Item
             with inline get (i : int) = Polynomial<int, 'a> ( MapExt.ofList [ MapExt.ofList [(name, i), 1], num.one ] )
@@ -617,7 +480,7 @@ module PolynomialExtensions =
     type Param private() = class end
     let param : Param = null
     let inline (?) (v : Param) (name : string) : 'p -> Polynomial<'p, 'c> =
-        let num = NumInstances.instance<'c>
+        let num = RealInstances.instance<'c>
         fun i -> Polynomial<'p, 'c> ( MapExt.ofList [ MapExt.ofList [(name, i), 1], num.one ] )
 
 module Polynomial =
@@ -633,7 +496,7 @@ module Polynomial =
 
     type Data<'c, 'a, 'v> =
         {
-            num     : Num<'v>
+            num     : Real<'v>
             dim     : 'a -> 'c
             fetch   : 'c -> 'a -> 'v
             init    : 'c -> ('c -> 'v) -> 'a
@@ -805,7 +668,7 @@ type CG private() =
     static member Solve(p : Polynomial<int, 'v>, name : string, x0 : 'v[], eps : float) =
         let data : Polynomial.Data<int, 'v[], 'v> = 
             {
-                num     = NumInstances.instance<'v>
+                num     = RealInstances.instance<'v>
                 dim     = Array.length
                 fetch   = Array.item
                 init    = Array.init
@@ -821,7 +684,7 @@ type CG private() =
     static member Solve(p : Polynomial<int * int, 'v>, name : string, x0 : 'v[,], eps : float) =
         let data : Polynomial.Data<int * int, 'v[,], 'v> = 
             {
-                num     = NumInstances.instance<'v>
+                num     = RealInstances.instance<'v>
                 dim     = fun a -> a.GetLength(0), a.GetLength(1)
                 fetch   = fun (i,j) a -> a.[i,j]
                 init    = fun (r,c) f -> Array2D.init r c (fun r c -> f(r,c))
@@ -837,7 +700,7 @@ type CG private() =
     static member Solve(p : Polynomial<int * int, 'v>, name : string, x0 : Matrix<'v>, eps : float) =
         let data : Polynomial.Data<int * int, Matrix<'v>, 'v> = 
             {
-                num     = NumInstances.instance<'v>
+                num     = RealInstances.instance<'v>
                 dim     = fun a -> (int a.Size.X, int a.Size.Y)
                 fetch   = fun (x,y) a -> a.[x,y]
                 init    = fun (x,y) f -> Matrix<'v>(V2l(x,y)).SetByCoord(fun (c : V2l) -> f(int c.X, int c.Y))
@@ -853,7 +716,7 @@ type CG private() =
     static member Solve(p : Polynomial<int, 'v>, name : string, x0 : Vector<'v>, eps : float) =
         let data : Polynomial.Data<int, Vector<'v>, 'v> = 
             {
-                num     = NumInstances.instance<'v>
+                num     = RealInstances.instance<'v>
                 dim     = fun a -> int a.Size
                 fetch   = fun (x) a -> a.[x]
                 init    = fun (x) f -> Vector<'v>(x).SetByCoord(fun (c : int64) -> f(int c))
@@ -918,21 +781,55 @@ let solve2d() =
     grad2d.Solve x02d
 
 
-type RNum<'a> =
+type RReal<'a> =
     {
         zero    : Expr<'a>
         one     : Expr<'a>
         add     : Expr<'a -> 'a -> 'a>
+        sub     : Expr<'a -> 'a -> 'a>
+        neg     : Expr<'a -> 'a>
         mul     : Expr<'a -> 'a -> 'a>
+        div     : Expr<'a -> 'a -> 'a>
+
+        min     : Expr<'a -> 'a -> 'a>
+        max     : Expr<'a -> 'a -> 'a>
+        pinf    : Expr<'a>
+        ninf    : Expr<'a>
+
+        fromV4  : Expr<V4d -> 'a>
     }
 
-module ReflectedNum =
+module ReflectedReal =
+    open FShade 
+
+    [<GLSLIntrinsic("(1.0 / 0.0)")>]
+    let pinf() : float = System.Double.PositiveInfinity
+    
+    [<GLSLIntrinsic("(-1.0 / 0.0)")>]
+    let ninf() : float = System.Double.NegativeInfinity
+    
+    [<GLSLIntrinsic("(1.0 / 0.0)")>]
+    let fpinf() : float32 = System.Single.PositiveInfinity
+    
+    [<GLSLIntrinsic("(-1.0 / 0.0)")>]
+    let fninf() : float32 = System.Single.NegativeInfinity
+
     let Cfloat64 =
         {
             zero    = <@ 0.0 @>
             one     = <@ 1.0 @>
             add     = <@ (+) @>
+            sub     = <@ (-) @>
             mul     = <@ (*) @>
+            div     = <@ (/) @>
+            neg     = <@ (~-) @>
+
+            min     = <@ min @>
+            max     = <@ max @>
+            pinf    = <@ pinf() @>
+            ninf    = <@ ninf() @>
+
+            fromV4  = <@ fun v -> v.X @>
         }
 
     let Cfloat32 =
@@ -940,16 +837,127 @@ module ReflectedNum =
             zero    = <@ 0.0f @>
             one     = <@ 1.0f @>
             add     = <@ (+) @>
+            sub     = <@ (-) @>
             mul     = <@ (*) @>
+            div     = <@ (/) @>
+            neg     = <@ (~-) @>
+
+            min     = <@ min @>
+            max     = <@ max @>
+            pinf    = <@ fpinf() @>
+            ninf    = <@ fninf() @>
+            fromV4  = <@ fun v -> float32 v.X @>
+        }
+
+    let CV2f =
+        {
+            zero    = <@ V2f.Zero @>
+            one     = <@ V2f.II @>
+            add     = <@ (+) @>
+            sub     = <@ (-) @>
+            mul     = <@ (*) @>
+            div     = <@ (/) @>
+            neg     = <@ (~-) @>
+            min     = <@ fun l r -> V2f(min l.X r.X, min l.Y r.Y) @>
+            max     = <@ fun l r -> V2f(max l.X r.X, max l.Y r.Y) @>
+            pinf    = <@ V2f(fpinf(), fpinf()) @>
+            ninf    = <@ V2f(fninf(), fninf()) @>
+            fromV4  = <@ fun v -> V2f v.XY @>
+        }
+
+    let CV2d =
+        {
+            zero    = <@ V2d.Zero @>
+            one     = <@ V2d.II @>
+            add     = <@ (+) @>
+            sub     = <@ (-) @>
+            mul     = <@ (*) @>
+            div     = <@ (/) @>
+            neg     = <@ (~-) @>
+            min     = <@ fun l r -> V2d(min l.X r.X, min l.Y r.Y) @>
+            max     = <@ fun l r -> V2d(max l.X r.X, max l.Y r.Y) @>
+            pinf    = <@ V2d(pinf(), pinf()) @>
+            ninf    = <@ V2d(ninf(), ninf()) @>
+            fromV4  = <@ fun v -> v.XY @>
+        }
+
+    let CV3f =
+        {
+            zero    = <@ V3f.Zero @>
+            one     = <@ V3f.III @>
+            add     = <@ (+) @>
+            sub     = <@ (-) @>
+            mul     = <@ (*) @>
+            div     = <@ (/) @>
+            neg     = <@ (~-) @>
+            min     = <@ fun l r -> V3f(min l.X r.X, min l.Y r.Y, min l.Z r.Z) @>
+            max     = <@ fun l r -> V3f(max l.X r.X, max l.Y r.Y, max l.Z r.Z) @>
+            pinf    = <@ V3f(fpinf(), fpinf(), fpinf()) @>
+            ninf    = <@ V3f(fninf(), fninf(), fninf()) @>
+            fromV4  = <@ fun v -> V3f v.XYZ @>
+        }
+
+    let CV3d =
+        {
+            zero    = <@ V3d.Zero @>
+            one     = <@ V3d.III @>
+            add     = <@ (+) @>
+            sub     = <@ (-) @>
+            mul     = <@ (*) @>
+            div     = <@ (/) @>
+            neg     = <@ (~-) @>
+            min     = <@ fun l r -> V3d(min l.X r.X, min l.Y r.Y, min l.Z r.Z) @>
+            max     = <@ fun l r -> V3d(max l.X r.X, max l.Y r.Y, max l.Z r.Z) @>
+            pinf    = <@ V3d(pinf(), pinf(), pinf()) @>
+            ninf    = <@ V3d(ninf(), ninf(), ninf()) @>
+            fromV4  = <@ fun v -> v.XYZ @>
+        }
+
+    let CV4f =
+        {
+            zero    = <@ V4f.Zero @>
+            one     = <@ V4f.IIII @>
+            add     = <@ (+) @>
+            sub     = <@ (-) @>
+            mul     = <@ (*) @>
+            div     = <@ (/) @>
+            neg     = <@ (~-) @>
+            min     = <@ fun l r -> V4f(min l.X r.X, min l.Y r.Y, min l.Z r.Z, min l.W r.W) @>
+            max     = <@ fun l r -> V4f(max l.X r.X, max l.Y r.Y, max l.Z r.Z, max l.W r.W) @>
+            pinf    = <@ V4f(fpinf(), fpinf(), fpinf(), fpinf()) @>
+            ninf    = <@ V4f(fninf(), fninf(), fninf(), fninf()) @>
+            fromV4  = <@ fun v -> V4f v @>
+        }
+
+    let CV4d =
+        {
+            zero    = <@ V4d.Zero @>
+            one     = <@ V4d.IIII @>
+            add     = <@ (+) @>
+            sub     = <@ (-) @>
+            mul     = <@ (*) @>
+            div     = <@ (/) @>
+            neg     = <@ (~-) @>
+            min     = <@ fun l r -> V4d(min l.X r.X, min l.Y r.Y, min l.Z r.Z, min l.W r.W) @>
+            max     = <@ fun l r -> V4d(max l.X r.X, max l.Y r.Y, max l.Z r.Z, max l.W r.W) @>
+            pinf    = <@ V4d(pinf(), pinf(), pinf(), pinf()) @>
+            ninf    = <@ V4d(ninf(), ninf(), ninf(), ninf()) @>
+            fromV4  = <@ fun v -> v @>
         }
 
     let internal table =
         LookupTable.lookupTable [
             typeof<float32>,    Cfloat32 :> obj
             typeof<float>,      Cfloat64 :> obj
+            typeof<V2f>,        CV2f :> obj
+            typeof<V2d>,        CV2d :> obj
+            typeof<V3f>,        CV3f :> obj
+            typeof<V3d>,        CV3d :> obj
+            typeof<V4f>,        CV4f :> obj
+            typeof<V4d>,        CV4d :> obj
         ]
 
-    let instance<'a> = table typeof<'a> |> unbox<RNum<'a>>
+    let instance<'a> = table typeof<'a> |> unbox<RReal<'a>>
 
 module CgSolverShader =
     open FShade
@@ -1140,12 +1148,15 @@ module CgSolverShader =
         }
 
 
-type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime, conv : Expr<V4d -> 'a>) =
-    static let num = NumInstances.instance<'a>
-    static let rnum = ReflectedNum.instance<'a>
+type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime) =
+    static let num = RealInstances.instance<'a>
+    static let rnum = ReflectedReal.instance<'a>
 
+    let conv = rnum.fromV4
     let v4Mul = <@ fun a b -> (%rnum.mul) ((%conv) a) ((%conv) b) @>
     let v4Add = <@ fun a b -> (%rnum.add) ((%conv) a) ((%conv) b) @>
+    let v4Max = <@ fun a b -> (%rnum.max) ((%conv) a) ((%conv) b) @>
+    let v4Min = <@ fun a b -> (%rnum.min) ((%conv) a) ((%conv) b) @>
 
     static let ceilDiv (a : int) (b : int) =
         if a % b = 0 then a / b
@@ -1161,6 +1172,12 @@ type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime, conv : Expr<V4d -> 'a>
     let dot2d = runtime.CreateComputeShader (CgSolverShader.dot2d rnum.zero v4Mul rnum.add)
     let sum1d = runtime.CreateComputeShader (CgSolverShader.sum1d rnum.zero rnum.add)
     let sum2d = runtime.CreateComputeShader (CgSolverShader.sum2d rnum.zero v4Add rnum.add)
+
+    let max1d = runtime.CreateComputeShader (CgSolverShader.sum1d rnum.ninf rnum.max)
+    let min1d = runtime.CreateComputeShader (CgSolverShader.sum1d rnum.pinf rnum.min)
+    
+    //let max2d = runtime.CreateComputeShader (CgSolverShader.sum2d rnum.ninf v4Max rnum.max)
+    //let min2d = runtime.CreateComputeShader (CgSolverShader.sum2d rnum.pinf v4Min rnum.min)
 
     member x.Sum(v : IBuffer<'a>) =
         if v.Count <= 0 then
@@ -1189,6 +1206,60 @@ type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime, conv : Expr<V4d -> 'a>
 
             x.Sum(res)
 
+    member x.Min(v : IBuffer<'a>) =
+        if v.Count <= 0 then
+            num.div num.one num.zero
+
+        elif v.Count = 1 then
+            let arr = Array.zeroCreate 1
+            v.Download(arr)
+            arr.[0]
+
+        else
+            let resCnt = ceilDiv v.Count CgSolverShader.foldSize
+            use res = runtime.CreateBuffer<'a>(resCnt)
+            use input = runtime.NewInputBinding min1d
+            input.["arr"] <- v
+            input.["cnt"] <- v.Count
+            input.["result"] <- res
+            input.Flush()
+            
+            runtime.Run [
+                ComputeCommand.Bind min1d
+                ComputeCommand.SetInput input
+                ComputeCommand.Dispatch resCnt
+                ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
+            ]
+
+            x.Min(res)
+        
+    member x.Max(v : IBuffer<'a>) =
+        if v.Count <= 0 then
+            num.div (num.neg num.one) num.zero
+
+        elif v.Count = 1 then
+            let arr = Array.zeroCreate 1
+            v.Download(arr)
+            arr.[0]
+
+        else
+            let resCnt = ceilDiv v.Count CgSolverShader.foldSize
+            use res = runtime.CreateBuffer<'a>(resCnt)
+            use input = runtime.NewInputBinding max1d
+            input.["arr"] <- v
+            input.["cnt"] <- v.Count
+            input.["result"] <- res
+            input.Flush()
+            
+            runtime.Run [
+                ComputeCommand.Bind max1d
+                ComputeCommand.SetInput input
+                ComputeCommand.Dispatch resCnt
+                ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
+            ]
+
+            x.Max(res)
+       
     member x.Sum(v : ITextureSubResource) =
         let size = v.Size.XY
         
@@ -1248,10 +1319,6 @@ type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime, conv : Expr<V4d -> 'a>
 
             x.Sum(res)
 
-    //member inline x.Length(l : IBuffer<'a>) =
-    //    let r = x.Dot(l,l)
-    //    sqrt r
-
     member x.Dot(l : ITextureSubResource, r : ITextureSubResource) =  
         if l.Size.XY <> r.Size.XY then failwith "buffers have mismatching size"
         let size = l.Size.XY
@@ -1280,6 +1347,52 @@ type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime, conv : Expr<V4d -> 'a>
 
             x.Sum(res)
 
+    member x.Length(l : IBuffer<'a>) =
+        let r = x.Dot(l,l)
+        num.sqrt r
+
+    member x.Length(l : ITextureSubResource) =
+        let r = x.Dot(l,l)
+        num.sqrt r
+
+    member x.Average(v : IBuffer<'a>) =
+        num.div (x.Sum v) (num.fromInt v.Count)
+        
+    member x.Average(v : ITextureSubResource) =
+        num.div (x.Sum v) (num.fromInt (v.Size.X * v.Size.Y))
+
+
+    member x.Sum(v : 'a[]) =
+        use b = runtime.CreateBuffer v
+        x.Sum b
+        
+    member x.Min(v : 'a[]) =
+        use b = runtime.CreateBuffer v
+        x.Min b
+        
+    member x.Max(v : 'a[]) =
+        use b = runtime.CreateBuffer v
+        x.Max b
+
+    member x.Dot(l : 'a[], r : 'a[]) =
+        use lb = runtime.CreateBuffer l
+        use rb = runtime.CreateBuffer r
+        x.Dot(lb, rb)
+
+    member x.Length(v : 'a[]) =
+        use b = runtime.CreateBuffer v
+        x.Length(b)
+        
+    member x.Average(v : 'a[]) =
+        use b = runtime.CreateBuffer v
+        x.Average b
+
+    member x.Sum(v : PixImage) =
+        let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
+        runtime.Upload(tl, 0, 0, v)
+        try x.Sum(tl.[TextureAspect.Color, 0, 0])
+        finally runtime.DeleteTexture tl
+
     member x.Dot(l : PixImage, r : PixImage) =
         let tl = runtime.CreateTexture (l.Size, TextureFormat.ofPixFormat l.PixFormat TextureParams.empty, 1, 1)
         let tr = runtime.CreateTexture (r.Size, TextureFormat.ofPixFormat r.PixFormat TextureParams.empty, 1, 1)
@@ -1292,16 +1405,21 @@ type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime, conv : Expr<V4d -> 'a>
             runtime.DeleteTexture tl
             runtime.DeleteTexture tr
 
-    member x.Sum(v : PixImage) =
+    member x.Length(v : PixImage) =
         let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
         runtime.Upload(tl, 0, 0, v)
-        try x.Sum(tl.[TextureAspect.Color, 0, 0])
+        try x.Length(tl.[TextureAspect.Color, 0, 0])
         finally runtime.DeleteTexture tl
-
+        
+    member x.Average(v : PixImage) =
+        let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
+        runtime.Upload(tl, 0, 0, v)
+        try x.Average(tl.[TextureAspect.Color, 0, 0])
+        finally runtime.DeleteTexture tl
 
 let app = new HeadlessVulkanApplication()
 let runtime = app.Runtime
-let s = CgSolver<float32>(runtime, <@ fun v -> float32 v.X @>)
+let s = CgSolver<float32>(runtime)
 
 let dot (a : float32[]) (b : float32[]) =
     use a = runtime.CreateBuffer a

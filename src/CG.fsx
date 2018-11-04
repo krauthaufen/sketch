@@ -1020,7 +1020,7 @@ module CgSolverShader =
         }
 
     [<LocalSize(X = 8, Y = 8)>]
-    let sum2d (zero : Expr<'b>) (addV4 : Expr<V4d -> V4d -> 'b>) (add : Expr<'b -> 'b -> 'b>) (lLevel : int) (result : 'b[]) =
+    let fold2d (zero : Expr<'b>) (addV4 : Expr<V4d -> V4d -> 'b>) (add : Expr<'b -> 'b -> 'b>) (lLevel : int) (result : 'b[]) =
         compute {
             let mem = allocateShared<'b> 128
 
@@ -1116,7 +1116,7 @@ module CgSolverShader =
         }
               
     [<LocalSize(X = halfFoldSize)>]
-    let sum1d (zero : Expr<'b>) (add : Expr<'b -> 'b -> 'b>) (cnt : int) (arr : 'b[]) (result : 'b[]) =
+    let fold1d (zero : Expr<'b>) (add : Expr<'b -> 'b -> 'b>) (cnt : int) (arr : 'b[]) (result : 'b[]) =
         compute {
             let mem = allocateShared<'b> foldSize
             let tid = getLocalId().X
@@ -1170,14 +1170,14 @@ type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime) =
     
     let dot1d = runtime.CreateComputeShader (CgSolverShader.dot1d rnum.zero rnum.mul rnum.add)
     let dot2d = runtime.CreateComputeShader (CgSolverShader.dot2d rnum.zero v4Mul rnum.add)
-    let sum1d = runtime.CreateComputeShader (CgSolverShader.sum1d rnum.zero rnum.add)
-    let sum2d = runtime.CreateComputeShader (CgSolverShader.sum2d rnum.zero v4Add rnum.add)
+    let sum1d = runtime.CreateComputeShader (CgSolverShader.fold1d rnum.zero rnum.add)
+    let sum2d = runtime.CreateComputeShader (CgSolverShader.fold2d rnum.zero v4Add rnum.add)
 
-    let max1d = runtime.CreateComputeShader (CgSolverShader.sum1d rnum.ninf rnum.max)
-    let min1d = runtime.CreateComputeShader (CgSolverShader.sum1d rnum.pinf rnum.min)
+    let max1d = runtime.CreateComputeShader (CgSolverShader.fold1d rnum.ninf rnum.max)
+    let min1d = runtime.CreateComputeShader (CgSolverShader.fold1d rnum.pinf rnum.min)
     
-    //let max2d = runtime.CreateComputeShader (CgSolverShader.sum2d rnum.ninf v4Max rnum.max)
-    //let min2d = runtime.CreateComputeShader (CgSolverShader.sum2d rnum.pinf v4Min rnum.min)
+    let max2d = runtime.CreateComputeShader (CgSolverShader.fold2d rnum.ninf v4Max rnum.max)
+    let min2d = runtime.CreateComputeShader (CgSolverShader.fold2d rnum.pinf v4Min rnum.min)
 
     member x.Sum(v : IBuffer<'a>) =
         if v.Count <= 0 then
@@ -1260,31 +1260,6 @@ type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime) =
 
             x.Max(res)
        
-    member x.Sum(v : ITextureSubResource) =
-        let size = v.Size.XY
-        
-        if size.AnySmallerOrEqual 0 then
-            num.zero
-            
-        else
-            let resCnt = ceilDiv2 size (V2i(16,16))
-            
-            use res = runtime.CreateBuffer<'a>(resCnt.X * resCnt.Y)
-            use input = runtime.NewInputBinding sum2d
-            input.["l"] <- v.Texture
-            input.["lLevel"] <- v.Level
-            input.["result"] <- res
-            input.Flush()
-
-            runtime.Run [
-                ComputeCommand.Bind sum2d
-                ComputeCommand.SetInput input
-                ComputeCommand.Dispatch resCnt
-                ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
-            ]
-
-            x.Sum(res)
-
     member x.Dot(l : IBuffer<'a>, r : IBuffer<'a>) =
         if l.Count <> r.Count then failwith "buffers have mismatching size"
         let cnt = l.Count
@@ -1319,6 +1294,96 @@ type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime) =
 
             x.Sum(res)
 
+    member x.Length(l : IBuffer<'a>) =
+        let r = x.Dot(l,l)
+        num.sqrt r
+        
+    member x.LengthSquared(l : IBuffer<'a>) =
+        x.Dot(l,l)
+
+    member x.Average(v : IBuffer<'a>) =
+        num.div (x.Sum v) (num.fromInt v.Count)
+        
+    member x.Variance(v : IBuffer<'a>) =
+        let e0 = num.div (x.LengthSquared v) (num.fromInt v.Count)
+        let e1 = num.pow (x.Average v) 2
+        num.sub e0 e1
+
+    member x.Sum(v : ITextureSubResource) =
+        let size = v.Size.XY
+        
+        if size.AnySmallerOrEqual 0 then
+            num.zero
+            
+        else
+            let resCnt = ceilDiv2 size (V2i(16,16))
+            
+            use res = runtime.CreateBuffer<'a>(resCnt.X * resCnt.Y)
+            use input = runtime.NewInputBinding sum2d
+            input.["l"] <- v.Texture
+            input.["lLevel"] <- v.Level
+            input.["result"] <- res
+            input.Flush()
+
+            runtime.Run [
+                ComputeCommand.Bind sum2d
+                ComputeCommand.SetInput input
+                ComputeCommand.Dispatch resCnt
+                ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
+            ]
+
+            x.Sum(res)
+            
+    member x.Min(v : ITextureSubResource) =
+        let size = v.Size.XY
+        
+        if size.AnySmallerOrEqual 0 then
+            num.zero
+            
+        else
+            let resCnt = ceilDiv2 size (V2i(16,16))
+            
+            use res = runtime.CreateBuffer<'a>(resCnt.X * resCnt.Y)
+            use input = runtime.NewInputBinding min2d
+            input.["l"] <- v.Texture
+            input.["lLevel"] <- v.Level
+            input.["result"] <- res
+            input.Flush()
+
+            runtime.Run [
+                ComputeCommand.Bind min2d
+                ComputeCommand.SetInput input
+                ComputeCommand.Dispatch resCnt
+                ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
+            ]
+
+            x.Min(res)
+
+    member x.Max(v : ITextureSubResource) =
+        let size = v.Size.XY
+        
+        if size.AnySmallerOrEqual 0 then
+            num.zero
+            
+        else
+            let resCnt = ceilDiv2 size (V2i(16,16))
+            
+            use res = runtime.CreateBuffer<'a>(resCnt.X * resCnt.Y)
+            use input = runtime.NewInputBinding max2d
+            input.["l"] <- v.Texture
+            input.["lLevel"] <- v.Level
+            input.["result"] <- res
+            input.Flush()
+
+            runtime.Run [
+                ComputeCommand.Bind max2d
+                ComputeCommand.SetInput input
+                ComputeCommand.Dispatch resCnt
+                ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
+            ]
+
+            x.Max(res)
+        
     member x.Dot(l : ITextureSubResource, r : ITextureSubResource) =  
         if l.Size.XY <> r.Size.XY then failwith "buffers have mismatching size"
         let size = l.Size.XY
@@ -1347,19 +1412,20 @@ type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime) =
 
             x.Sum(res)
 
-    member x.Length(l : IBuffer<'a>) =
-        let r = x.Dot(l,l)
-        num.sqrt r
-
     member x.Length(l : ITextureSubResource) =
         let r = x.Dot(l,l)
         num.sqrt r
-
-    member x.Average(v : IBuffer<'a>) =
-        num.div (x.Sum v) (num.fromInt v.Count)
+        
+    member x.LengthSquared(l : ITextureSubResource) =
+        x.Dot(l,l)
         
     member x.Average(v : ITextureSubResource) =
         num.div (x.Sum v) (num.fromInt (v.Size.X * v.Size.Y))
+        
+    member x.Variance(v : ITextureSubResource) =
+        let e0 = num.div (x.LengthSquared v) (num.fromInt (v.Size.X * v.Size.Y))
+        let e1 = num.pow (x.Average v) 2
+        num.sub e0 e1
 
 
     member x.Sum(v : 'a[]) =
@@ -1383,14 +1449,35 @@ type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime) =
         use b = runtime.CreateBuffer v
         x.Length(b)
         
+    member x.LengthSquared(v : 'a[]) =
+        use b = runtime.CreateBuffer v
+        x.LengthSquared(b)
+
     member x.Average(v : 'a[]) =
         use b = runtime.CreateBuffer v
         x.Average b
+        
+    member x.Variance(v : 'a[]) =
+        use b = runtime.CreateBuffer v
+        x.Variance b
+
 
     member x.Sum(v : PixImage) =
         let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
         runtime.Upload(tl, 0, 0, v)
         try x.Sum(tl.[TextureAspect.Color, 0, 0])
+        finally runtime.DeleteTexture tl
+        
+    member x.Min(v : PixImage) =
+        let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
+        runtime.Upload(tl, 0, 0, v)
+        try x.Min(tl.[TextureAspect.Color, 0, 0])
+        finally runtime.DeleteTexture tl
+        
+    member x.Max(v : PixImage) =
+        let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
+        runtime.Upload(tl, 0, 0, v)
+        try x.Max(tl.[TextureAspect.Color, 0, 0])
         finally runtime.DeleteTexture tl
 
     member x.Dot(l : PixImage, r : PixImage) =
@@ -1411,11 +1498,24 @@ type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime) =
         try x.Length(tl.[TextureAspect.Color, 0, 0])
         finally runtime.DeleteTexture tl
         
+    member x.LengthSquared(v : PixImage) =
+        let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
+        runtime.Upload(tl, 0, 0, v)
+        try x.LengthSquared(tl.[TextureAspect.Color, 0, 0])
+        finally runtime.DeleteTexture tl
+        
     member x.Average(v : PixImage) =
         let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
         runtime.Upload(tl, 0, 0, v)
         try x.Average(tl.[TextureAspect.Color, 0, 0])
         finally runtime.DeleteTexture tl
+        
+    member x.Variance(v : PixImage) =
+        let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
+        runtime.Upload(tl, 0, 0, v)
+        try x.Variance(tl.[TextureAspect.Color, 0, 0])
+        finally runtime.DeleteTexture tl
+        
 
 let app = new HeadlessVulkanApplication()
 let runtime = app.Runtime

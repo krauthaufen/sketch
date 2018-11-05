@@ -5,9 +5,10 @@ open System.Runtime.CompilerServices
 open Aardvark.Base.Rendering
 open Microsoft.FSharp.Quotations
 open Aardvark.Rendering.Vulkan
+open System.Runtime.InteropServices
 
 do
-    let dir = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "obj")
+    let dir = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "bin")
     let info = System.IO.DirectoryInfo dir
     if not info.Exists then info.Create()
     System.AppDomain.CurrentDomain.SetData("APPBASE", dir)
@@ -645,6 +646,8 @@ module Polynomial =
                             //let r = rd + o
                             //let r = clamp 0 (x.Length - 1) r
 
+                            //<v|A*x>
+
                             if e = 0 then
                                 num.mul (data.fetch c v) (num.mul f (data.fetch r v))
                             else
@@ -781,6 +784,7 @@ let solve2d() =
     grad2d.Solve x02d
 
 
+
 type RReal<'a> =
     {
         zero    : Expr<'a>
@@ -790,6 +794,7 @@ type RReal<'a> =
         neg     : Expr<'a -> 'a>
         mul     : Expr<'a -> 'a -> 'a>
         div     : Expr<'a -> 'a -> 'a>
+        pow     : Expr<'a -> int -> 'a>
 
         min     : Expr<'a -> 'a -> 'a>
         max     : Expr<'a -> 'a -> 'a>
@@ -797,6 +802,7 @@ type RReal<'a> =
         ninf    : Expr<'a>
 
         fromV4  : Expr<V4d -> 'a>
+        format  : TextureFormat
     }
 
 module ReflectedReal =
@@ -823,6 +829,7 @@ module ReflectedReal =
             mul     = <@ (*) @>
             div     = <@ (/) @>
             neg     = <@ (~-) @>
+            pow     = <@ pown @>
 
             min     = <@ min @>
             max     = <@ max @>
@@ -830,6 +837,7 @@ module ReflectedReal =
             ninf    = <@ ninf() @>
 
             fromV4  = <@ fun v -> v.X @>
+            format  = TextureFormat.R32f
         }
 
     let Cfloat32 =
@@ -841,12 +849,14 @@ module ReflectedReal =
             mul     = <@ (*) @>
             div     = <@ (/) @>
             neg     = <@ (~-) @>
+            pow     = <@ pown @>
 
             min     = <@ min @>
             max     = <@ max @>
             pinf    = <@ fpinf() @>
             ninf    = <@ fninf() @>
             fromV4  = <@ fun v -> float32 v.X @>
+            format  = TextureFormat.R32f
         }
 
     let CV2f =
@@ -858,11 +868,13 @@ module ReflectedReal =
             mul     = <@ (*) @>
             div     = <@ (/) @>
             neg     = <@ (~-) @>
+            pow     = <@ fun v e -> V2f(pown v.X e, pown v.Y e) @>
             min     = <@ fun l r -> V2f(min l.X r.X, min l.Y r.Y) @>
             max     = <@ fun l r -> V2f(max l.X r.X, max l.Y r.Y) @>
             pinf    = <@ V2f(fpinf(), fpinf()) @>
             ninf    = <@ V2f(fninf(), fninf()) @>
             fromV4  = <@ fun v -> V2f v.XY @>
+            format  = TextureFormat.Rg32f
         }
 
     let CV2d =
@@ -874,11 +886,13 @@ module ReflectedReal =
             mul     = <@ (*) @>
             div     = <@ (/) @>
             neg     = <@ (~-) @>
+            pow     = <@ fun v e -> V2d(pown v.X e, pown v.Y e) @>
             min     = <@ fun l r -> V2d(min l.X r.X, min l.Y r.Y) @>
             max     = <@ fun l r -> V2d(max l.X r.X, max l.Y r.Y) @>
             pinf    = <@ V2d(pinf(), pinf()) @>
             ninf    = <@ V2d(ninf(), ninf()) @>
             fromV4  = <@ fun v -> v.XY @>
+            format  = TextureFormat.Rg32f
         }
 
     let CV3f =
@@ -890,11 +904,13 @@ module ReflectedReal =
             mul     = <@ (*) @>
             div     = <@ (/) @>
             neg     = <@ (~-) @>
+            pow     = <@ fun v e -> V3f(pown v.X e, pown v.Y e, pown v.Z e) @>
             min     = <@ fun l r -> V3f(min l.X r.X, min l.Y r.Y, min l.Z r.Z) @>
             max     = <@ fun l r -> V3f(max l.X r.X, max l.Y r.Y, max l.Z r.Z) @>
             pinf    = <@ V3f(fpinf(), fpinf(), fpinf()) @>
             ninf    = <@ V3f(fninf(), fninf(), fninf()) @>
             fromV4  = <@ fun v -> V3f v.XYZ @>
+            format  = TextureFormat.Rgb32f
         }
 
     let CV3d =
@@ -906,11 +922,13 @@ module ReflectedReal =
             mul     = <@ (*) @>
             div     = <@ (/) @>
             neg     = <@ (~-) @>
+            pow     = <@ fun v e -> V3d(pown v.X e, pown v.Y e, pown v.Z e) @>
             min     = <@ fun l r -> V3d(min l.X r.X, min l.Y r.Y, min l.Z r.Z) @>
             max     = <@ fun l r -> V3d(max l.X r.X, max l.Y r.Y, max l.Z r.Z) @>
             pinf    = <@ V3d(pinf(), pinf(), pinf()) @>
             ninf    = <@ V3d(ninf(), ninf(), ninf()) @>
             fromV4  = <@ fun v -> v.XYZ @>
+            format  = TextureFormat.Rgb32f
         }
 
     let CV4f =
@@ -922,11 +940,13 @@ module ReflectedReal =
             mul     = <@ (*) @>
             div     = <@ (/) @>
             neg     = <@ (~-) @>
+            pow     = <@ fun v e -> V4f(pown v.X e, pown v.Y e, pown v.Z e, pown v.W e) @>
             min     = <@ fun l r -> V4f(min l.X r.X, min l.Y r.Y, min l.Z r.Z, min l.W r.W) @>
             max     = <@ fun l r -> V4f(max l.X r.X, max l.Y r.Y, max l.Z r.Z, max l.W r.W) @>
             pinf    = <@ V4f(fpinf(), fpinf(), fpinf(), fpinf()) @>
             ninf    = <@ V4f(fninf(), fninf(), fninf(), fninf()) @>
             fromV4  = <@ fun v -> V4f v @>
+            format  = TextureFormat.Rgba32f
         }
 
     let CV4d =
@@ -938,11 +958,13 @@ module ReflectedReal =
             mul     = <@ (*) @>
             div     = <@ (/) @>
             neg     = <@ (~-) @>
+            pow     = <@ fun v e -> V4d(pown v.X e, pown v.Y e, pown v.Z e, pown v.W e) @>
             min     = <@ fun l r -> V4d(min l.X r.X, min l.Y r.Y, min l.Z r.Z, min l.W r.W) @>
             max     = <@ fun l r -> V4d(max l.X r.X, max l.Y r.Y, max l.Z r.Z, max l.W r.W) @>
             pinf    = <@ V4d(pinf(), pinf(), pinf(), pinf()) @>
             ninf    = <@ V4d(ninf(), ninf(), ninf(), ninf()) @>
             fromV4  = <@ fun v -> v @>
+            format  = TextureFormat.Rgba32f
         }
 
     let internal table =
@@ -959,7 +981,7 @@ module ReflectedReal =
 
     let instance<'a> = table typeof<'a> |> unbox<RReal<'a>>
 
-module CgSolverShader =
+module TensorToolShaders =
     open FShade
 
     [<Literal>]
@@ -968,6 +990,54 @@ module CgSolverShader =
     [<Literal>]
     let halfFoldSize = 64
 
+    let lSampler =
+        sampler2d {
+            texture uniform?l
+            addressU WrapMode.Border
+            addressV WrapMode.Border
+            filter Filter.MinMagLinear
+        }
+
+    let rSampler =
+        sampler2d {
+            texture uniform?r
+            addressU WrapMode.Border
+            addressV WrapMode.Border
+            filter Filter.MinMagLinear
+        }
+
+
+    [<LocalSize(X = halfFoldSize)>]
+    let fold1d (zero : Expr<'b>) (add : Expr<'b -> 'b -> 'b>) (cnt : int) (arr : 'b[]) (result : 'b[]) =
+        compute {
+            let mem = allocateShared<'b> foldSize
+            let tid = getLocalId().X
+            let gid = getWorkGroupId().X
+            
+            // index calculations
+            let lai = 2 * tid
+            let lbi = lai + 1
+            let ai  = foldSize * gid + lai
+            let bi  = ai + 1 
+            
+            // load existing values into local memory
+            mem.[lai] <- if ai < cnt then arr.[ai] else %zero
+            mem.[lbi] <- if bi < cnt then arr.[bi] else %zero
+            barrier()
+
+            // sum the local values from right to left
+            let mutable s = halfFoldSize
+            while s > 0 do
+                if tid < s then
+                    mem.[tid] <- (%add) mem.[tid] mem.[tid + s]
+                s <- s >>> 1
+                barrier()
+
+            // store the overall sum in the result-buffer
+            if tid = 0 then
+                result.[gid] <- mem.[0]
+
+        }
 
     [<LocalSize(X = halfFoldSize)>]
     let dot1d (zero : Expr<'b>) (mul : Expr<'a -> 'a -> 'b>) (add : Expr<'b -> 'b -> 'b>) (cnt : int) (l : 'a[]) (r : 'a[]) (result : 'b[]) =
@@ -1000,23 +1070,6 @@ module CgSolverShader =
             if tid = 0 then
                 result.[gid] <- mem.[0]
 
-        }
-    
-
-    let lSampler =
-        sampler2d {
-            texture uniform?l
-            addressU WrapMode.Border
-            addressV WrapMode.Border
-            filter Filter.MinMagLinear
-        }
-
-    let rSampler =
-        sampler2d {
-            texture uniform?r
-            addressU WrapMode.Border
-            addressV WrapMode.Border
-            filter Filter.MinMagLinear
         }
 
     [<LocalSize(X = 8, Y = 8)>]
@@ -1115,42 +1168,22 @@ module CgSolverShader =
 
         }
               
-    [<LocalSize(X = halfFoldSize)>]
-    let fold1d (zero : Expr<'b>) (add : Expr<'b -> 'b -> 'b>) (cnt : int) (arr : 'b[]) (result : 'b[]) =
+
+    [<LocalSize(X = 64)>]
+    let mad1d (mul : Expr<'a -> 'b -> 'c>) (add : Expr<'d -> 'c -> 'd>) (cnt : int) (src : 'a[]) (factor : 'b) (dst : 'd[]) =
         compute {
-            let mem = allocateShared<'b> foldSize
-            let tid = getLocalId().X
-            let gid = getWorkGroupId().X
-            
-            // index calculations
-            let lai = 2 * tid
-            let lbi = lai + 1
-            let ai  = foldSize * gid + lai
-            let bi  = ai + 1 
-            
-            // load existing values into local memory
-            mem.[lai] <- if ai < cnt then arr.[ai] else %zero
-            mem.[lbi] <- if bi < cnt then arr.[bi] else %zero
-            barrier()
-
-            // sum the local values from right to left
-            let mutable s = halfFoldSize
-            while s > 0 do
-                if tid < s then
-                    mem.[tid] <- (%add) mem.[tid] mem.[tid + s]
-                s <- s >>> 1
-                barrier()
-
-            // store the overall sum in the result-buffer
-            if tid = 0 then
-                result.[gid] <- mem.[0]
-
+            let id = getGlobalId().X
+            if id < cnt then
+                dst.[id] <- (%add) dst.[id] ((%mul) src.[id] factor)
         }
 
 
-type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime) =
+type TensorTools<'a when 'a : unmanaged>(runtime : IRuntime) =
     static let num = RealInstances.instance<'a>
     static let rnum = ReflectedReal.instance<'a>
+
+
+
 
     let conv = rnum.fromV4
     let v4Mul = <@ fun a b -> (%rnum.mul) ((%conv) a) ((%conv) b) @>
@@ -1167,75 +1200,43 @@ type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime) =
             ceilDiv a.X b.X,
             ceilDiv a.Y b.Y
         )
-    
-    let dot1d = runtime.CreateComputeShader (CgSolverShader.dot1d rnum.zero rnum.mul rnum.add)
-    let dot2d = runtime.CreateComputeShader (CgSolverShader.dot2d rnum.zero v4Mul rnum.add)
-    let sum1d = runtime.CreateComputeShader (CgSolverShader.fold1d rnum.zero rnum.add)
-    let sum2d = runtime.CreateComputeShader (CgSolverShader.fold2d rnum.zero v4Add rnum.add)
 
-    let max1d = runtime.CreateComputeShader (CgSolverShader.fold1d rnum.ninf rnum.max)
-    let min1d = runtime.CreateComputeShader (CgSolverShader.fold1d rnum.pinf rnum.min)
-    
-    let max2d = runtime.CreateComputeShader (CgSolverShader.fold2d rnum.ninf v4Max rnum.max)
-    let min2d = runtime.CreateComputeShader (CgSolverShader.fold2d rnum.pinf v4Min rnum.min)
+    let withImage (img : PixImage) (action : IBackendTexture -> 'r) =
+        let tex = runtime.CreateTexture (img.Size, TextureFormat.ofPixFormat img.PixFormat TextureParams.empty, 1, 1)
+        runtime.Upload(tex, 0, 0, img)
+        try action tex
+        finally runtime.DeleteTexture tex
 
-    member x.Sum(v : IBuffer<'a>) =
-        if v.Count <= 0 then
-            num.zero
-
-        elif v.Count = 1 then
-            let arr = Array.zeroCreate 1
-            v.Download(arr)
-            arr.[0]
-
-        else
-            let resCnt = ceilDiv v.Count CgSolverShader.foldSize
-            use res = runtime.CreateBuffer<'a>(resCnt)
-            use input = runtime.NewInputBinding sum1d
-            input.["arr"] <- v
-            input.["cnt"] <- v.Count
-            input.["result"] <- res
-            input.Flush()
-            
-            runtime.Run [
-                ComputeCommand.Bind sum1d
-                ComputeCommand.SetInput input
-                ComputeCommand.Dispatch resCnt
-                ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
-            ]
-
-            x.Sum(res)
-
-    member x.Min(v : IBuffer<'a>) =
-        if v.Count <= 0 then
-            num.div num.one num.zero
-
-        elif v.Count = 1 then
-            let arr = Array.zeroCreate 1
-            v.Download(arr)
-            arr.[0]
-
-        else
-            let resCnt = ceilDiv v.Count CgSolverShader.foldSize
-            use res = runtime.CreateBuffer<'a>(resCnt)
-            use input = runtime.NewInputBinding min1d
-            input.["arr"] <- v
-            input.["cnt"] <- v.Count
-            input.["result"] <- res
-            input.Flush()
-            
-            runtime.Run [
-                ComputeCommand.Bind min1d
-                ComputeCommand.SetInput input
-                ComputeCommand.Dispatch resCnt
-                ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
-            ]
-
-            x.Min(res)
+    let withBuffer (data : 'a[]) (action : IBuffer<'a> -> 'r) =
+        use b = runtime.CreateBuffer data
+        action b
         
-    member x.Max(v : IBuffer<'a>) =
+    let withBuffer2d (data : 'a[,]) (action : IBuffer<'a> -> 'r) =
+        let cnt = data.GetLength(0) * data.GetLength(1)
+        use buffer = runtime.CreateBuffer<'a>(cnt)
+        let gc = GCHandle.Alloc(data, GCHandleType.Pinned) 
+        try buffer.Upload(gc.AddrOfPinnedObject(), nativeint sizeof<'a> * nativeint cnt)
+        finally gc.Free()
+        action buffer
+
+    let dot1d = runtime.CreateComputeShader (TensorToolShaders.dot1d rnum.zero rnum.mul rnum.add)
+    let dot2d = runtime.CreateComputeShader (TensorToolShaders.dot2d rnum.zero v4Mul rnum.add)
+    let sum1d = runtime.CreateComputeShader (TensorToolShaders.fold1d rnum.zero rnum.add)
+    let sum2d = runtime.CreateComputeShader (TensorToolShaders.fold2d rnum.zero v4Add rnum.add)
+
+    let mul1d = lazy ( runtime.CreateComputeShader (TensorToolShaders.fold1d rnum.one rnum.mul) )
+    let max1d = lazy ( runtime.CreateComputeShader (TensorToolShaders.fold1d rnum.ninf rnum.max) )
+    let min1d = lazy ( runtime.CreateComputeShader (TensorToolShaders.fold1d rnum.pinf rnum.min) )
+    
+    let mul2d = lazy ( runtime.CreateComputeShader (TensorToolShaders.fold2d rnum.one v4Mul rnum.mul) )
+    let max2d = lazy ( runtime.CreateComputeShader (TensorToolShaders.fold2d rnum.ninf v4Max rnum.max) )
+    let min2d = lazy ( runtime.CreateComputeShader (TensorToolShaders.fold2d rnum.pinf v4Min rnum.min) )
+    
+    let mad1d = runtime.CreateComputeShader (TensorToolShaders.mad1d rnum.mul rnum.add)
+
+    let rec fold1d (zero : 'a) (shader : IComputeShader) (v : IBuffer<'a>) =
         if v.Count <= 0 then
-            num.div (num.neg num.one) num.zero
+            zero
 
         elif v.Count = 1 then
             let arr = Array.zeroCreate 1
@@ -1243,23 +1244,52 @@ type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime) =
             arr.[0]
 
         else
-            let resCnt = ceilDiv v.Count CgSolverShader.foldSize
+            let resCnt = ceilDiv v.Count TensorToolShaders.foldSize
             use res = runtime.CreateBuffer<'a>(resCnt)
-            use input = runtime.NewInputBinding max1d
+            use input = runtime.NewInputBinding shader
             input.["arr"] <- v
             input.["cnt"] <- v.Count
             input.["result"] <- res
             input.Flush()
             
             runtime.Run [
-                ComputeCommand.Bind max1d
+                ComputeCommand.Bind shader
                 ComputeCommand.SetInput input
                 ComputeCommand.Dispatch resCnt
                 ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
             ]
 
-            x.Max(res)
-       
+            fold1d zero shader res
+
+    let rec fold2d (zero : 'a) (shader : IComputeShader) (shader1d : IComputeShader) (v : ITextureSubResource) =
+        let size = v.Size.XY
+        
+        if size.AnySmallerOrEqual 0 then
+            zero
+            
+        else
+            let resCnt = ceilDiv2 size (V2i(16,16))
+            
+            use res = runtime.CreateBuffer<'a>(resCnt.X * resCnt.Y)
+            use input = runtime.NewInputBinding shader
+            input.["l"] <- v.Texture
+            input.["lLevel"] <- v.Level
+            input.["result"] <- res
+            input.Flush()
+
+            runtime.Run [
+                ComputeCommand.Bind shader
+                ComputeCommand.SetInput input
+                ComputeCommand.Dispatch resCnt
+                ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
+            ]
+            
+            fold1d zero shader1d res
+            
+    member x.Sum(v : IBuffer<'a>) = fold1d num.zero sum1d v
+    member x.Product(v : IBuffer<'a>) = fold1d num.one mul1d.Value v
+    member x.Min(v : IBuffer<'a>) = fold1d (num.div num.one num.zero) min1d.Value v
+    member x.Max(v : IBuffer<'a>) = fold1d (num.div (num.neg num.one) num.zero) max1d.Value v
     member x.Dot(l : IBuffer<'a>, r : IBuffer<'a>) =
         if l.Count <> r.Count then failwith "buffers have mismatching size"
         let cnt = l.Count
@@ -1275,7 +1305,7 @@ type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime) =
             num.mul la.[0] ra.[0]
 
         else
-            let resCnt = ceilDiv cnt CgSolverShader.foldSize
+            let resCnt = ceilDiv cnt TensorToolShaders.foldSize
             
             use res = runtime.CreateBuffer<'a>(resCnt)
             use input = runtime.NewInputBinding dot1d
@@ -1309,80 +1339,27 @@ type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime) =
         let e1 = num.pow (x.Average v) 2
         num.sub e0 e1
 
-    member x.Sum(v : ITextureSubResource) =
-        let size = v.Size.XY
-        
-        if size.AnySmallerOrEqual 0 then
-            num.zero
-            
-        else
-            let resCnt = ceilDiv2 size (V2i(16,16))
-            
-            use res = runtime.CreateBuffer<'a>(resCnt.X * resCnt.Y)
-            use input = runtime.NewInputBinding sum2d
-            input.["l"] <- v.Texture
-            input.["lLevel"] <- v.Level
-            input.["result"] <- res
+    member x.MultiplyAdd(src : IBuffer<'a>, f : 'a, dst : IBuffer<'a>) =
+        let cnt = min src.Count dst.Count
+        if cnt > 0 then
+            use input = runtime.NewInputBinding mad1d
+            input.["src"] <- src
+            input.["cnt"] <- cnt
+            input.["dst"] <- dst
+            input.["factor"] <- f
             input.Flush()
 
             runtime.Run [
-                ComputeCommand.Bind sum2d
+                ComputeCommand.Bind mad1d
                 ComputeCommand.SetInput input
-                ComputeCommand.Dispatch resCnt
-                ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
+                ComputeCommand.Dispatch (ceilDiv cnt mad1d.LocalSize.X)
             ]
 
-            x.Sum(res)
-            
-    member x.Min(v : ITextureSubResource) =
-        let size = v.Size.XY
-        
-        if size.AnySmallerOrEqual 0 then
-            num.zero
-            
-        else
-            let resCnt = ceilDiv2 size (V2i(16,16))
-            
-            use res = runtime.CreateBuffer<'a>(resCnt.X * resCnt.Y)
-            use input = runtime.NewInputBinding min2d
-            input.["l"] <- v.Texture
-            input.["lLevel"] <- v.Level
-            input.["result"] <- res
-            input.Flush()
 
-            runtime.Run [
-                ComputeCommand.Bind min2d
-                ComputeCommand.SetInput input
-                ComputeCommand.Dispatch resCnt
-                ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
-            ]
-
-            x.Min(res)
-
-    member x.Max(v : ITextureSubResource) =
-        let size = v.Size.XY
-        
-        if size.AnySmallerOrEqual 0 then
-            num.zero
-            
-        else
-            let resCnt = ceilDiv2 size (V2i(16,16))
-            
-            use res = runtime.CreateBuffer<'a>(resCnt.X * resCnt.Y)
-            use input = runtime.NewInputBinding max2d
-            input.["l"] <- v.Texture
-            input.["lLevel"] <- v.Level
-            input.["result"] <- res
-            input.Flush()
-
-            runtime.Run [
-                ComputeCommand.Bind max2d
-                ComputeCommand.SetInput input
-                ComputeCommand.Dispatch resCnt
-                ComputeCommand.Sync(res.Buffer, ResourceAccess.ShaderWrite, ResourceAccess.ShaderRead)
-            ]
-
-            x.Max(res)
+    member x.Sum(v : ITextureSubResource) = fold2d num.zero sum2d sum1d v
+    member x.Product(v : ITextureSubResource) = fold2d num.one mul2d.Value mul1d.Value v
+    member x.Min(v : ITextureSubResource) = fold2d (num.div num.one num.zero) min2d.Value min1d.Value v
+    member x.Max(v : ITextureSubResource) = fold2d (num.div (num.neg num.one) num.zero) max2d.Value max1d.Value v
         
     member x.Dot(l : ITextureSubResource, r : ITextureSubResource) =  
         if l.Size.XY <> r.Size.XY then failwith "buffers have mismatching size"
@@ -1428,98 +1405,343 @@ type CgSolver<'a when 'a : unmanaged>(runtime : IRuntime) =
         num.sub e0 e1
 
 
-    member x.Sum(v : 'a[]) =
-        use b = runtime.CreateBuffer v
-        x.Sum b
-        
-    member x.Min(v : 'a[]) =
-        use b = runtime.CreateBuffer v
-        x.Min b
-        
-    member x.Max(v : 'a[]) =
-        use b = runtime.CreateBuffer v
-        x.Max b
-
-    member x.Dot(l : 'a[], r : 'a[]) =
-        use lb = runtime.CreateBuffer l
-        use rb = runtime.CreateBuffer r
-        x.Dot(lb, rb)
-
-    member x.Length(v : 'a[]) =
-        use b = runtime.CreateBuffer v
-        x.Length(b)
-        
-    member x.LengthSquared(v : 'a[]) =
-        use b = runtime.CreateBuffer v
-        x.LengthSquared(b)
-
-    member x.Average(v : 'a[]) =
-        use b = runtime.CreateBuffer v
-        x.Average b
-        
-    member x.Variance(v : 'a[]) =
-        use b = runtime.CreateBuffer v
-        x.Variance b
+    member x.Sum(v : 'a[]) = withBuffer v x.Sum
+    member x.Product(v : 'a[]) = withBuffer v x.Product
+    member x.Min(v : 'a[]) = withBuffer v x.Min
+    member x.Max(v : 'a[]) = withBuffer v x.Max
+    member x.Dot(l : 'a[], r : 'a[]) = withBuffer l (fun lb -> withBuffer r (fun rb -> x.Dot(lb, rb)))
+    member x.Length(v : 'a[]) = withBuffer v x.Length
+    member x.LengthSquared(v : 'a[]) = withBuffer v x.LengthSquared
+    member x.Average(v : 'a[]) = withBuffer v x.Average
+    member x.Variance(v : 'a[]) = withBuffer v x.Variance
+    member x.MultiplyAdd(src : 'a[], f : 'a, dst : 'a[]) = withBuffer src (fun src -> withBuffer dst (fun dst -> x.MultiplyAdd(src, f, dst); dst.Download()))
 
 
-    member x.Sum(v : PixImage) =
-        let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
-        runtime.Upload(tl, 0, 0, v)
-        try x.Sum(tl.[TextureAspect.Color, 0, 0])
-        finally runtime.DeleteTexture tl
-        
-    member x.Min(v : PixImage) =
-        let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
-        runtime.Upload(tl, 0, 0, v)
-        try x.Min(tl.[TextureAspect.Color, 0, 0])
-        finally runtime.DeleteTexture tl
-        
-    member x.Max(v : PixImage) =
-        let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
-        runtime.Upload(tl, 0, 0, v)
-        try x.Max(tl.[TextureAspect.Color, 0, 0])
-        finally runtime.DeleteTexture tl
+    member x.Sum(v : 'a[,]) = withBuffer2d v x.Sum
+    member x.Product(v : 'a[,]) = withBuffer2d v x.Product
+    member x.Min(v : 'a[,]) = withBuffer2d v x.Min
+    member x.Max(v : 'a[,]) = withBuffer2d v x.Max
+    member x.Dot(l : 'a[,], r : 'a[,]) = withBuffer2d l (fun lb -> withBuffer2d r (fun rb -> x.Dot(lb, rb)))
+    member x.Length(v : 'a[,]) = withBuffer2d v x.Length
+    member x.LengthSquared(v : 'a[,]) = withBuffer2d v x.LengthSquared
+    member x.Average(v : 'a[,]) = withBuffer2d v x.Average
+    member x.Variance(v : 'a[,]) = withBuffer2d v x.Variance
+    member x.MultiplyAdd(src : 'a[,], f : 'a, dst : 'a[,]) = 
+        withBuffer2d src (fun bsrc -> 
+            withBuffer2d dst (fun bdst -> 
+                x.MultiplyAdd(bsrc, f, bdst)
+                let cnt = (src.GetLength 0) * (src.GetLength 1)
+                let res : 'a[,] = Array2D.zeroCreate (src.GetLength 0) (src.GetLength 1)
+                let gc = GCHandle.Alloc(res, GCHandleType.Pinned)
+                try
+                    bdst.Buffer.Download(0n, gc.AddrOfPinnedObject(), nativeint sizeof<'a> * nativeint cnt)
+                    res
+                finally
+                    gc.Free()
+            )
+        )
 
-    member x.Dot(l : PixImage, r : PixImage) =
-        let tl = runtime.CreateTexture (l.Size, TextureFormat.ofPixFormat l.PixFormat TextureParams.empty, 1, 1)
-        let tr = runtime.CreateTexture (r.Size, TextureFormat.ofPixFormat r.PixFormat TextureParams.empty, 1, 1)
-        runtime.Upload(tl, 0, 0, l)
-        runtime.Upload(tr, 0, 0, r)
-        
-        try
-            x.Dot(tl.[TextureAspect.Color, 0, 0], tr.[TextureAspect.Color, 0, 0])
-        finally
-            runtime.DeleteTexture tl
-            runtime.DeleteTexture tr
 
-    member x.Length(v : PixImage) =
-        let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
-        runtime.Upload(tl, 0, 0, v)
-        try x.Length(tl.[TextureAspect.Color, 0, 0])
-        finally runtime.DeleteTexture tl
+
+    member x.Sum(v : PixImage) = withImage v (fun t -> x.Sum(t.[TextureAspect.Color, 0, 0]))
+    member x.Product(v : PixImage) = withImage v (fun t -> x.Product(t.[TextureAspect.Color, 0, 0]))
+    member x.Min(v : PixImage) = withImage v (fun t -> x.Min(t.[TextureAspect.Color, 0, 0]))
+    member x.Max(v : PixImage) = withImage v (fun t -> x.Max(t.[TextureAspect.Color, 0, 0]))
+    member x.Dot(l : PixImage, r : PixImage) = withImage l (fun tl -> withImage r (fun tr -> x.Dot(tl.[TextureAspect.Color, 0, 0], tr.[TextureAspect.Color, 0, 0])))
+    member x.Length(v : PixImage) = withImage v (fun t -> x.Length(t.[TextureAspect.Color, 0, 0]))
+    member x.LengthSquared(v : PixImage) = withImage v (fun t -> x.LengthSquared(t.[TextureAspect.Color, 0, 0]))
+    member x.Average(v : PixImage) = withImage v (fun t -> x.Average(t.[TextureAspect.Color, 0, 0]))
+    member x.Variance(v : PixImage) = withImage v (fun t -> x.Variance(t.[TextureAspect.Color, 0, 0]))
         
-    member x.LengthSquared(v : PixImage) =
-        let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
-        runtime.Upload(tl, 0, 0, v)
-        try x.LengthSquared(tl.[TextureAspect.Color, 0, 0])
-        finally runtime.DeleteTexture tl
+
+    //member x.EvalPolynomial(p : Polynomial<int, 'a>, buffer : IBuffer<'a>, dst : IBuffer<'a>) =
+    //    let offsets, factors, exponents = 
+    //        MapExt.toArray p.coefficients
+    //            |> Array.collect (fun (k,f) ->
+    //                if MapExt.isEmpty k then
+    //                    [| (0, f, 0) |]
+    //                else
+    //                    k |> MapExt.toArray |> Array.map (fun ((_,o), e) ->
+    //                        (o, f, e)
+    //                    )
+    //            )
+    //            |> Array.unzip3
+
+    //    use bo = runtime.CreateBuffer offsets
+    //    use bf = runtime.CreateBuffer factors
+    //    use be = runtime.CreateBuffer exponents
+
+    //    use input = runtime.NewInputBinding poly1d
+    //    input.["offsets"] <- bo
+    //    input.["factors"] <- bf
+    //    input.["exponents"] <- be
+    //    input.["cnt"] <- buffer.Count
+    //    input.["x"] <- buffer
+    //    input.["res"] <- dst
+    //    input.["PolynomialCount"] <- offsets.Length
+    //    input.Flush()
+
+    //    runtime.Run [
+    //        ComputeCommand.Bind poly1d
+    //        ComputeCommand.SetInput input
+    //        ComputeCommand.Dispatch (ceilDiv buffer.Count poly1d.LocalSize.X)
+    //    ]
+
+
+module CGShaders =
+    open FShade
+    open FShade.Imperative
         
-    member x.Average(v : PixImage) =
-        let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
-        runtime.Upload(tl, 0, 0, v)
-        try x.Average(tl.[TextureAspect.Color, 0, 0])
-        finally runtime.DeleteTexture tl
+
+
+    let toExpr1d (getBuffer : string -> Expr<'c[]> * Expr<int>) (offset : Expr<int>) (p : Polynomial<int, 'c>) =
+        let real = ReflectedReal.instance<'c>
+        let mutable bindings = MapExt.empty
+        let rm = real.mul
+        let ra = real.add
+
+        let mutable cache = MapExt.empty
+
+        let getBuffer name =
+            let mutable res = Unchecked.defaultof<_>
+            cache <- cache |> MapExt.alter name (function Some o -> res <- o; Some o | None -> res <- getBuffer name;  Some res)
+            res
+
+
+        let fetch (name : string) (idx : Expr<int>) =
+            let buffer, count = getBuffer name
+            <@@
+                (%buffer).[clamp 0 ((%count) - 1) (%idx)]
+            @@>
+
+        let rec get (v : string) (c : int) (e : int) =
+            if e = 0 then
+                real.one :> Expr
+            else 
+                let name = 
+                    if c < 0 then sprintf "%s_n%03d_%02d" v -c e
+                    else sprintf "%s_p%03d_%02d" v c e
+                
+                match MapExt.tryFind name bindings with
+                    | Some (v,e) ->
+                        Expr.Var v
+                    | None ->
+                        let buffer, cnt = getBuffer v
+                        let value = fetch v <@ (%offset) + c @>
+                        let var = Var(name, typeof<'c>)
+                        
+                        if e = 1 then
+                            bindings <- MapExt.add name (var,value) bindings
+                            Expr.Var var
+                        else
+                            let parent = get v c (e - 1)
+                            let value = <@@ (%rm) (%%parent) (%%value) @@>
+                            bindings <- MapExt.add name (var, value) bindings
+                            Expr.Var var
+
+        let mul (m : MapExt<string * int, int>) =
+            let m = m |> MapExt.toList
+            let rec fold (m : list<(string * int) * int>) =
+                match m with
+                    | [] -> 
+                        real.one :> Expr
+
+                    | [((v,i),e)] ->
+                        get v i e  
+
+                    | ((v,i),e) :: rest ->
+                        let a = get v i e
+                        let b = fold rest
+                        <@@ (%rm) (%%a) (%%b) @@>
+
+            fold m
+            
+        let rec build (parts : list<MapExt<string * int, int> * 'c>) =
+            match parts with
+                | [] -> 
+                    real.zero :> Expr
+                | [m, f] ->
+                    let c = mul m
+                    <@@ (%rm) (%%c) f @@>
+                | (m,f) :: rest ->
+                    let a = mul m
+                    let b = build rest
+                    <@@ (%ra) ((%rm) (%%a) f) (%%b) @@>
+                    
+            
+
+
+
+        let res = build (MapExt.toList p.coefficients)
+
+        let rec warp (bindings : list<Var * Expr>) (body : Expr) =
+            match bindings with
+                | [] -> body
+                | (v,e) :: rest ->
+                    Expr.Let(v, e, warp rest body)
+
+
+        warp (List.map snd (MapExt.toList bindings)) res
+
+    let toExpr2d (getBuffer : string -> Expr<Sampler2d>) (offset : Expr<V2i>) (p : Polynomial<int * int, 'c>) =
+        let real = ReflectedReal.instance<'c>
+        let mutable bindings = MapExt.empty
+        let rm = real.mul
+        let ra = real.add
+        let ofV4 = real.fromV4
+
+        let mutable cache = MapExt.empty
         
-    member x.Variance(v : PixImage) =
-        let tl = runtime.CreateTexture (v.Size, TextureFormat.ofPixFormat v.PixFormat TextureParams.empty, 1, 1)
-        runtime.Upload(tl, 0, 0, v)
-        try x.Variance(tl.[TextureAspect.Color, 0, 0])
-        finally runtime.DeleteTexture tl
+        let sizeVar = Var("size", typeof<V2i>)
+        let size : Expr<V2i> = Expr.Var sizeVar |> Expr.Cast
+        let getBuffer name =
+            let mutable res = Unchecked.defaultof<_>
+            cache <- cache |> MapExt.alter name (function Some o -> res <- o; Some o | None -> res <- getBuffer name;  Some res)
+
+            if not (bindings.ContainsKey "000size") then
+                let tex = res
+                bindings <- MapExt.add "000size" (sizeVar, <@@ (%tex).Size @@>) bindings
+
+
+            res
+            
+
+        let fetch (name : string) (idx : Expr<V2i>) =
+            let buffer = getBuffer name
+            <@@
+                (%ofV4) ((%buffer).SampleLevel((V2d (%idx) + V2d.Half) / V2d (%size), 0.0))
+            @@>
+
+        let rec get (v : string) (cx : int, cy : int) (e : int) =
+            if e = 0 then
+                real.one :> Expr
+            else 
+                let nx = if cx < 0 then sprintf "n%03d" -cx else sprintf "p%03d" cx
+                let ny = if cy < 0 then sprintf "n%03d" -cy else sprintf "p%03d" cy
+                let name = sprintf "%s_%s_%s_%02d" v nx ny e
+                
+                match MapExt.tryFind name bindings with
+                    | Some (v,e) ->
+                        Expr.Var v
+                    | None ->
+                        let buffer = getBuffer v
+                        let value = fetch v <@ (%offset) + V2i(cx,cy) @>
+                        let var = Var(name, typeof<'c>)
+                        
+                        if e = 1 then
+                            bindings <- MapExt.add name (var,value) bindings
+                            Expr.Var var
+                        else
+                            let parent = get v (cx, cy) (e - 1)
+                            let value = <@@ (%rm) (%%parent) (%%value) @@>
+                            bindings <- MapExt.add name (var, value) bindings
+                            Expr.Var var
+
+        let mul (m : MapExt<string * (int * int), int>) =
+            let m = m |> MapExt.toList
+            let rec fold (m : list<(string * (int * int)) * int>) =
+                match m with
+                    | [] -> 
+                        real.one :> Expr
+
+                    | [((v,i),e)] ->
+                        get v i e  
+
+                    | ((v,i),e) :: rest ->
+                        let a = get v i e
+                        let b = fold rest
+                        <@@ (%rm) (%%a) (%%b) @@>
+
+            fold m
+            
+        let rec build (parts : list<MapExt<string * (int * int), int> * 'c>) =
+            match parts with
+                | [] -> 
+                    real.zero :> Expr
+                | [m, f] ->
+                    let c = mul m
+                    <@@ (%rm) (%%c) f @@>
+                | (m,f) :: rest ->
+                    let a = mul m
+                    let b = build rest
+                    <@@ (%ra) ((%rm) (%%a) f) (%%b) @@>
+                    
+            
+
+
+
+        let res = build (MapExt.toList p.coefficients)
+
+        let rec warp (bindings : list<Var * Expr>) (body : Expr) =
+            match bindings with
+                | [] -> body
+                | (v,e) :: rest ->
+                    Expr.Let(v, e, warp rest body)
+
+
+        warp (List.map snd (MapExt.toList bindings)) res
+
+    type Dummy<'c> = { [<Position>] p : 'c }
+    let toCCode1d (getBuffer : string -> Expr<'c[]> * Expr<int>) (offset : Expr<int>) (p : Polynomial<int, 'c>) =
+
+        let e = toExpr1d getBuffer offset p
+        let effect = 
+            FShade.Effect.ofFunction (fun (v : Effects.Vertex) ->
+                vertex {
+                    let a = (%%e : 'c)
+                    return { p = a }
+                }
+            )
+            
+        let module_ = Effect.toModule { EffectConfig.empty with EffectConfig.lastStage = ShaderStage.Vertex; EffectConfig.outputs = Map.ofList ["Positions", (typeof<'c>, 0)] } effect
+        let glsl = 
+            ModuleCompiler.compileGLSL430 module_
+
+        let (_,err) = GLSLang.GLSLang.tryCompile GLSLang.ShaderStage.Vertex "main" ["Vertex"] glsl.code
+
+        printfn "%s" err
+        glsl.code
         
+    let toCCode2d (getBuffer : string -> Expr<Sampler2d>) (offset : Expr<V2i>) (p : Polynomial<int * int, 'c>) =
+        
+        let e = toExpr2d getBuffer offset p
+        let effect = 
+            FShade.Effect.ofFunction (fun (v : Effects.Vertex) ->
+                vertex {
+                    let a = (%%e : 'c)
+                    return { p = a }
+                }
+            )
+            
+        let module_ = Effect.toModule { EffectConfig.empty with EffectConfig.lastStage = ShaderStage.Vertex; EffectConfig.outputs = Map.ofList ["Positions", (typeof<'c>, 0)] } effect
+        let glsl = 
+            ModuleCompiler.compileGLSL430 module_
+
+        let (_,err) = GLSLang.GLSLang.tryCompile GLSLang.ShaderStage.Vertex "main" ["Vertex"] glsl.code
+
+        printfn "%s" err
+        glsl.code
+
+    [<GLSLIntrinsic("gl_VertexIndex")>]
+    let id() : int = onlyInShaderCode "id"
+
+    let simple1d (p : Polynomial<int, 'c>) =
+        toCCode1d (fun n -> <@ uniform?StorageBuffer?x @>, <@ uniform?XCount @>) (Expr.ReadInput<int>(ParameterKind.Input, "id")) p 
+        
+    let simple2d (p : Polynomial<int * int, 'c>) =
+        let sampler (name : string) =
+            Expr.ReadInput<Sampler2d>(ParameterKind.Uniform, name)
+
+
+        toCCode2d sampler (Expr.ReadInput<V2i>(ParameterKind.Input, "id")) p 
+
+
+
+
 
 let app = new HeadlessVulkanApplication()
 let runtime = app.Runtime
-let s = CgSolver<float32>(runtime)
+let s = TensorTools<float32>(runtime)
 
 let dot (a : float32[]) (b : float32[]) =
     use a = runtime.CreateBuffer a

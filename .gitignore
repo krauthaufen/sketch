@@ -47,3 +47,4 @@ src/GLVM/*.dylib
 /src/Demo/Scratch/InteractionModels.g.fs
 /.paket/Paket.Restore.targets
 /.paket/load
+/bin

@@ -7,7 +7,7 @@ open Aardvark.Base.Monads.State
 [<AutoOpen>]
 module rec Stuff =
 
-    type ExternalTypeInfo =
+    type TypeInfo =
         {
             eassembly   : string
             enamespace  : list<string>
@@ -39,7 +39,7 @@ module rec Stuff =
 
     type TypeDef =
         {
-            dinfo   : ExternalTypeInfo
+            dinfo   : TypeInfo
             ddef    : TypeDefInfo
         }
 
@@ -75,7 +75,7 @@ module rec Stuff =
         | RChar
         | RString
 
-        | RImported of info : ExternalTypeInfo * def : Option<TypeDefInfo>
+        | RImported of info : TypeInfo * def : Option<TypeDefInfo>
         | RTuple of elements : list<TypeRef>
         | RFunction of TypeRef * TypeRef
 
@@ -133,10 +133,11 @@ module rec Stuff =
                     | _ -> None
 
 
-    type ExternalFunctionInfo =
+    type FunctionInfo =
         {
-            fdeclaring  : ExternalTypeInfo
+            fdeclaring  : TypeInfo
             fname       : string
+            fstatic     : bool
             fgeneric    : list<TypeRef>
             fparameters : list<list<string * TypeRef>>
             freturn     : TypeRef
@@ -147,11 +148,12 @@ module rec Stuff =
 
         static member Entry(name : string, typ : TypeRef) =
             {
-                fdeclaring = ExternalTypeInfo.Top
+                fdeclaring = TypeInfo.Top
                 fname = name
                 fgeneric = []
                 fparameters = []
                 freturn = typ
+                fstatic = true
             }
 
         member x.ftype =
@@ -159,8 +161,8 @@ module rec Stuff =
             let types = x.fparameters |> List.map (List.map snd >> tup)
             List.foldBack (fun e s -> RFunction(e,s)) types x.freturn 
   
-    module ExternalFunctionInfo =
-        let toString (s : ExternalFunctionInfo) : string =
+    module FunctionInfo =
+        let toString (s : FunctionInfo) : string =
             let decl = s.fdeclaring.efullname
             let args =
                 s.fparameters |> List.map (fun block ->
@@ -170,12 +172,15 @@ module rec Stuff =
                     |> sprintf "(%s)"
                 )
                 |> String.concat " "
-            sprintf "%s.%s %s : %s" decl s.fname args (TypeRef.toString s.freturn)
+
+            let prefix = if s.fstatic then "" else "instance "
+
+            sprintf "%s%s.%s %s : %s" prefix decl s.fname args (TypeRef.toString s.freturn)
 
 
     type FunctionDef =
         {
-            finfo       : ExternalFunctionInfo
+            finfo       : FunctionInfo
             fexpr       : Expr
         }
 
@@ -207,11 +212,12 @@ module rec Stuff =
             
             let info =
                 {
-                    fdeclaring  = ExternalTypeInfo.Top
+                    fdeclaring  = TypeInfo.Top
                     fname       = name
                     fgeneric    = []
                     fparameters = args |> List.map (fun (v : Var) -> [v.Name, v.Type])
                     freturn     = body.Type
+                    fstatic     = true
                 }
             { 
                 finfo = info
@@ -310,7 +316,7 @@ module rec Stuff =
     type ExprInfo =
         | EValue of value : Literal
         | EVar of Var
-        | ECall of f : ExternalFunctionInfo
+        | ECall of f : FunctionInfo
         | ELambda of Var
         | ENewRecord of TypeRef
         | ESequential
@@ -335,7 +341,7 @@ module rec Stuff =
             let value = Literal.ofTypedValue t value
             Expr(EValue value, value.ltype, [])
 
-        static member Call(f : ExternalFunctionInfo, args : list<Expr>) = 
+        static member Call(f : FunctionInfo, args : list<Expr>) = 
             let argTypes = args |> List.map (fun e -> e.Type)
             match TypeRef.tryApply argTypes f.ftype with
                 | Some ret ->
@@ -343,7 +349,7 @@ module rec Stuff =
                 | None ->
                     failwithf 
                         "[FShade] inconsistent argument types for %s: [%s]" 
-                        (ExternalFunctionInfo.toString f) 
+                        (FunctionInfo.toString f) 
                         (argTypes |> List.map TypeRef.toString |> String.concat "; ")
 
         static member Lambda(v : Var, e : Expr) =
@@ -506,8 +512,8 @@ module rec Stuff =
     type Module =
         {
             mname       : string
-            mtypes      : Map<ExternalTypeInfo, TypeDef>
-            mfunctions  : Map<ExternalFunctionInfo, FunctionDef>
+            mtypes      : Map<TypeInfo, TypeDef>
+            mfunctions  : Map<FunctionInfo, FunctionDef>
         }
 
     module Module =
@@ -533,12 +539,12 @@ module rec AdapterStuff =
 
     type TranslationState =
         {
-            typeImps    : MapExt<string, Set<ExternalTypeInfo>>
+            typeImps    : MapExt<string, Set<TypeInfo>>
             typeDefs    : hmap<Type, TypeDef>
             typeRefs    : hmap<Type, TypeRef>
             
-            funImps     : MapExt<string, Set<ExternalFunctionInfo>>
-            funRefs     : hmap<MethodBase, ExternalFunctionInfo>
+            funImps     : MapExt<string, Set<FunctionInfo>>
+            funRefs     : hmap<MethodBase, FunctionInfo>
             funDefs     : hmap<MethodBase, FunctionDef>
 
             variables   : MapExt<Var, TVar>
@@ -547,12 +553,12 @@ module rec AdapterStuff =
         static member Empty = { typeImps = MapExt.empty; typeRefs = HMap.empty; typeDefs = HMap.empty; funImps = MapExt.empty; funRefs = HMap.empty; funDefs = HMap.empty; variables = MapExt.empty }
 
     module TranslationState =
-        let importType (t : ExternalTypeInfo) (s : TranslationState) =
+        let importType (t : TypeInfo) (s : TranslationState) =
             { s with
                 typeImps = MapExt.alter t.eassembly (Option.defaultValue Set.empty >> Set.add t >> Some) s.typeImps
             }
 
-        let importFunction (t : ExternalFunctionInfo) (s : TranslationState) =
+        let importFunction (t : FunctionInfo) (s : TranslationState) =
             let ass = t.fdeclaring.eassembly
             { s with
                 funImps = MapExt.alter ass (Option.defaultValue Set.empty >> Set.add t >> Some) s.funImps
@@ -574,14 +580,14 @@ module rec AdapterStuff =
 
         let toModule (s : TranslationState) =
             {
-                mname = ExternalTypeInfo.Top.efullname
+                mname = TypeInfo.Top.efullname
                 mfunctions = s.funDefs |> HMap.toSeq |> Seq.map (fun (_,d) -> d.finfo, d) |> Map.ofSeq
                 mtypes = s.typeDefs |> HMap.toSeq |> Seq.map (fun (_,d) -> d.dinfo, d) |> Map.ofSeq
             }
             
 
 
-    module ExternalTypeInfo =
+    module TypeInfo =
         open System.Text.RegularExpressions
 
         let private genericRx = Regex @"^(.*?)`([0-9]+)"
@@ -651,7 +657,7 @@ module rec AdapterStuff =
                 | Some def ->
                     return Some def 
                 | None -> 
-                    let! ref = ExternalTypeInfo.ofTypeS t
+                    let! ref = TypeInfo.ofTypeS t
 
                     if FSharpType.IsRecord(t, true) then
                         let! fields = 
@@ -686,7 +692,7 @@ module rec AdapterStuff =
                                 }
                             )
                             
-                        let! ref = ExternalTypeInfo.ofTypeS t
+                        let! ref = TypeInfo.ofTypeS t
 
                         
                         let def = { dinfo = ref; ddef = DUnion(cases) }
@@ -695,8 +701,11 @@ module rec AdapterStuff =
 
                     else   
                         let isReflectable = 
-                            t.GetConstructors(BindingFlags.NonPublic ||| BindingFlags.Public ||| BindingFlags.CreateInstance)
-                            |> Array.exists (Expr.TryGetReflectedDefinition >> Option.isSome)
+                            t.GetMembers(BindingFlags.NonPublic ||| BindingFlags.Public ||| BindingFlags.CreateInstance ||| BindingFlags.Instance ||| BindingFlags.Static)
+                            |> Seq.choose (function (:? MethodBase as m) -> Some m | _ -> None)
+                            |> Seq.exists (Expr.TryGetReflectedDefinition >> Option.isSome)
+
+                        printfn "%A: %A" t.Name isReflectable
 
                         if isReflectable then
                             let! fields = 
@@ -708,7 +717,7 @@ module rec AdapterStuff =
                                         return (p.Name, t)
                                     }
                                 )
-                            let! ref = ExternalTypeInfo.ofTypeS t
+                            let! ref = TypeInfo.ofTypeS t
                             let def = { dinfo = ref; ddef = DObject fields }
                             do! State.modify (TranslationState.defineType t def)
                             return Some def
@@ -726,7 +735,16 @@ module rec AdapterStuff =
 
     module FunctionDef =
         open Microsoft.FSharp.Quotations.DerivedPatterns
+        open Microsoft.FSharp.Quotations.ExprShape
 
+        let rec removeUnitValue (e : Expr) =
+            match e with
+                | Sequential(l, Unit) -> removeUnitValue l
+                | Sequential(Unit, r) -> removeUnitValue r
+                | ShapeCombination(o, args) -> RebuildShapeCombination(o, List.map removeUnitValue args)
+                | ShapeLambda(v,b) -> Expr.Lambda(v, removeUnitValue b)
+                | ShapeVar _ -> e
+                    
         let rec private constructorBody (t : Type) (e : Expr) : Expr =
             match e with
                 | Sequential(Sequential(a,b), c) ->
@@ -741,6 +759,8 @@ module rec AdapterStuff =
                                 Expr.Var self
                             )
                         )
+
+                    let body = removeUnitValue body
 
                     let rec bindings (v : list<Var>) (e : list<Expr>) (b : Expr) =
                         match v, e with
@@ -770,7 +790,6 @@ module rec AdapterStuff =
                 | Lambda(v,Lambda(u, b)) when u.Type = typeof<unit> ->
                     memberBody t (Expr.Lambda(v, b))
                 | _ ->
-                    printfn "%A" e
                     e
         let private getParameters (e : Expr) =
             match e with
@@ -795,8 +814,8 @@ module rec AdapterStuff =
 
                                 let! e = TExpr.ofExpr expr
                                 
-                                let! info = ExternalFunctionInfo.tryOfMethodS false m
-                                let info = Option.get info
+                                let! info = FunctionInfo.tryOfMethodS false m
+                                let info : FunctionInfo = Option.get info
                                 let! pars = 
                                     getParameters expr |> List.mapS (fun v ->
                                         v |> List.mapS (fun v ->
@@ -810,7 +829,7 @@ module rec AdapterStuff =
                                 let info =
                                     {
                                         info with
-                                            fdeclaring = ExternalTypeInfo.Top
+                                            fdeclaring = TypeInfo.Top
                                             fparameters = pars
                                     }
 
@@ -821,7 +840,7 @@ module rec AdapterStuff =
                                     }
                                 
                                 do! State.modify (fun s ->
-                                        let update (o : Option<Set<ExternalFunctionInfo>>) =
+                                        let update (o : Option<Set<FunctionInfo>>) =
                                             match o with
                                                 | Some s ->
                                                     let s = Set.remove info s
@@ -847,7 +866,7 @@ module rec AdapterStuff =
             state {
                 match! FunctionDef.tryOfMethodS m with
                     | Some d -> return d.finfo
-                    | None -> return! ExternalFunctionInfo.ofMethodS m
+                    | None -> return! FunctionInfo.ofMethodS m
             }
 
     module TypeRef =
@@ -881,12 +900,12 @@ module rec AdapterStuff =
                             | Some def -> 
                                 return RImported(def.dinfo, Some def.ddef)
                             | None ->
-                                let! e = ExternalTypeInfo.ofTypeS t
+                                let! e = TypeInfo.ofTypeS t
                                 return RImported(e, None)
                             
             }
 
-    module ExternalFunctionInfo =
+    module FunctionInfo =
 
         let private getParameterBlocksS (m : MethodBase) =
             state {
@@ -941,7 +960,7 @@ module rec AdapterStuff =
                     | Some r ->
                         return Some r
                     | None -> 
-                        let! d = ExternalTypeInfo.ofTypeS mb.DeclaringType
+                        let! d = TypeInfo.ofTypeS mb.DeclaringType
                         let! self = TypeRef.ofTypeS mb.DeclaringType
                         let! gen =
                             if mb.IsGenericMethod then mb.GetGenericArguments() |> Array.toList |> List.mapS TypeRef.ofTypeS
@@ -959,6 +978,7 @@ module rec AdapterStuff =
                                     fgeneric    = gen
                                     fparameters = pars
                                     freturn     = ret
+                                    fstatic     = mb.IsStatic
                                 }
                             if import then
                                 do! State.modify (TranslationState.importFunction res)
@@ -975,6 +995,7 @@ module rec AdapterStuff =
                                     fgeneric    = gen
                                     fparameters = pars
                                     freturn     = ret
+                                    fstatic     = true
                                 }
                                 
                             if import then
@@ -1102,8 +1123,9 @@ type Rec =
 
 [<ReflectedDefinition>]
 type A(a : int) =
+    let b = 2 * a
     member x.A = a
-    member x.Bla() = a * 2
+    member x.Bla() = a * b
 [<ReflectedDefinition>]
 let test (a : int) (b : int) = a + b
 

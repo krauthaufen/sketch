@@ -6,26 +6,76 @@ open Aardvark.Base.Monads.State
 
 [<AutoOpen>]
 module rec Stuff =
-    
+
+    type ExternalTypeInfo =
+        {
+            eassembly   : string
+            enamespace  : list<string>
+            ename       : string
+            egeneric    : list<TypeRef>
+        }
+
+        static member Top  =
+            {
+                eassembly = ""
+                enamespace = []
+                ename = "Entry"
+                egeneric = []
+            }
+
+        member x.efullname = 
+            x.enamespace @ [x.ename] |> String.concat "."
+
+    type UnionCase =
+        {
+            uname       : string
+            ufields     : list<string * TypeRef>
+        }
+
+    type TypeDefInfo =
+        | DRecord of fields : list<string * TypeRef> 
+        | DUnion of cases : list<UnionCase>
+        | DObject of fields : list<string * TypeRef>
+
     type TypeDef =
-        | DRecord of name : string * fields : list<string * TypeRef> 
+        {
+            dinfo   : ExternalTypeInfo
+            ddef    : TypeDefInfo
+        }
 
     module TypeDef =
         let toString (d : TypeDef) =
-            match d with
-            | DRecord(name, fields) ->
+            let name = d.dinfo.ename
+            match d.ddef with
+            | DRecord(fields) ->
                 fields
                 |> List.map (fun (name, typ) -> sprintf "%s : %s" name (TypeRef.toString typ))
                 |> String.concat "; "
                 |> sprintf "type %s = { %s }" name
 
+            | DUnion(cases) ->
+                let cases = 
+                    cases |> List.map (fun c ->
+                        c.ufields
+                        |> List.map (fun (name, typ) -> sprintf "%s : %s" name (TypeRef.toString typ))
+                        |> String.concat " * "
+                        |> sprintf "%s of %s" c.uname
+                    )
+                sprintf "type %s = %s" name (String.concat " | " cases)
+            | DObject fields ->
+                fields
+                |> List.map (fun (name, typ) -> sprintf "val mutable public : %s : %s" name (TypeRef.toString typ))
+                |> String.concat "; "
+                |> sprintf "type %s = struct %s end" name
+                
     type TypeRef =
+        | RUnit
         | RInt of signed : bool * bits : int
         | RFloat of bits : int
         | RChar
         | RString
 
-        | RType of name : string
+        | RImported of info : ExternalTypeInfo * def : Option<TypeDefInfo>
         | RTuple of elements : list<TypeRef>
         | RFunction of TypeRef * TypeRef
 
@@ -35,7 +85,7 @@ module rec Stuff =
             | RInt(false, 8) -> "byte"
             | RInt(true, 32) -> "int"
             | RFloat(64) -> "float"
-
+            | RUnit -> "unit"
 
             | RInt(true, b) -> sprintf "int%d" b
             | RInt(false, b) -> sprintf "uint%d" b
@@ -45,7 +95,10 @@ module rec Stuff =
 
             | RTuple [e] -> toString e
             | RTuple elements -> elements |> List.map toString |> String.concat " * " |> sprintf "(%s)"
-            | RType name -> name
+            | RImported(info,_) -> 
+                match info.egeneric with
+                    | [] -> info.efullname
+                    | args -> sprintf "%s<%s>" info.efullname (args |> List.map toString |> String.concat ", ")
             | RFunction(a,b) -> sprintf "%s -> %s" (toString a) (toString b)
 
         let tryOfSimpleType =
@@ -65,6 +118,8 @@ module rec Stuff =
                 typeof<float16>, RFloat(16)
                 typeof<float32>, RFloat(32)
                 typeof<float>, RFloat(64)
+                
+                typeof<unit>, RUnit
             ]
 
         let tryApply (args : list<TypeRef>) (fType : TypeRef) =
@@ -78,19 +133,35 @@ module rec Stuff =
                     | _ -> None
 
 
-    type FunctionRef =
+    type ExternalFunctionInfo =
         {
-            fname           : string
-            fparameters     : list<list<string * TypeRef>>
-            freturn         : TypeRef
+            fdeclaring  : ExternalTypeInfo
+            fname       : string
+            fgeneric    : list<TypeRef>
+            fparameters : list<list<string * TypeRef>>
+            freturn     : TypeRef
         }
 
-        member x.ftype =
-            let types = x.fparameters |> List.map (List.map snd >> RTuple)
-            List.foldBack (fun e s -> RFunction(e,s)) types x.freturn 
+        member x.ffullname = 
+            x.fdeclaring.efullname + "." + x.fname
 
-    module FunctionRef =
-        let toString (s : FunctionRef) : string =
+        static member Entry(name : string, typ : TypeRef) =
+            {
+                fdeclaring = ExternalTypeInfo.Top
+                fname = name
+                fgeneric = []
+                fparameters = []
+                freturn = typ
+            }
+
+        member x.ftype =
+            let tup = function [e] -> e | es -> RTuple es
+            let types = x.fparameters |> List.map (List.map snd >> tup)
+            List.foldBack (fun e s -> RFunction(e,s)) types x.freturn 
+  
+    module ExternalFunctionInfo =
+        let toString (s : ExternalFunctionInfo) : string =
+            let decl = s.fdeclaring.efullname
             let args =
                 s.fparameters |> List.map (fun block ->
                     block
@@ -99,9 +170,56 @@ module rec Stuff =
                     |> sprintf "(%s)"
                 )
                 |> String.concat " "
-            sprintf "%s %s : %s" s.fname args (TypeRef.toString s.freturn)
+            sprintf "%s.%s %s : %s" decl s.fname args (TypeRef.toString s.freturn)
+
+
+    type FunctionDef =
+        {
+            finfo       : ExternalFunctionInfo
+            fexpr       : Expr
+        }
+
+    module FunctionDef =
+        open Patterns
+        
+        let toString (d : FunctionDef) =
+            match d.fexpr with
+                | Lambdas(vs, b) ->
+                    let b : Expr = b
+                    let args =
+                        d.finfo.fparameters |> List.map (fun block ->
+                            block
+                            |> List.map (fun (name, typ) -> sprintf "%s : %s" name (TypeRef.toString typ))
+                            |> String.concat ", "
+                            |> sprintf "(%s)"
+                        )
+                        |> String.concat " "
+                    sprintf "let %s %s : %s = %s" d.finfo.fname args (TypeRef.toString b.Type) (Expr.toString b)
+
+                | b ->
+                    sprintf "let %s : %s = %s" d.finfo.fname (TypeRef.toString b.Type) (Expr.toString b)
+
+        let ofExpr (name : string) (ex : Expr) =
+            let args, body = 
+                match ex with
+                    | Lambdas(vs, b) -> vs, b
+                    | _ -> [], ex
+            
+            let info =
+                {
+                    fdeclaring  = ExternalTypeInfo.Top
+                    fname       = name
+                    fgeneric    = []
+                    fparameters = args |> List.map (fun (v : Var) -> [v.Name, v.Type])
+                    freturn     = body.Type
+                }
+            { 
+                finfo = info
+                fexpr = ex
+            }
 
     type Literal =
+        | LUnit
         | LString of value : string
         | LChar of value : char
         | LInt of signed : bool * bits : int * value : uint64
@@ -109,6 +227,7 @@ module rec Stuff =
 
         member x.ltype =
             match x with
+                | LUnit -> RUnit
                 | LString _ -> RString
                 | LChar _ -> RChar
                 | LInt(s,b,_) -> RInt(s,b)
@@ -117,6 +236,7 @@ module rec Stuff =
     module Literal =
         let toString (l : Literal) =
             match l with
+                | LUnit -> "()"
                 | LString str -> sprintf "\"%s\"" str
                 | LChar c -> sprintf "'%c'" c
                 | LInt(true, 8, v) -> sprintf "%dy" (int8 v)
@@ -145,6 +265,7 @@ module rec Stuff =
                 
         let ofTypedValue (t : TypeRef) (o : obj) =
             match t with
+                | RUnit            -> LUnit
                 | RChar            -> LChar (unbox<char> o)
                 | RString          -> LString (unbox<string> o)
                 | (RInt(s, b))     -> LInt(s, b, System.Convert.ToUInt64 o)
@@ -156,8 +277,12 @@ module rec Stuff =
                 | Some v -> v
                 | None -> failwithf "[FShade] not a primitive type: %A" typeof<'a>
 
+
+
     [<Struct; CustomComparison; CustomEquality>]
-    type Var(name : string, typ : TypeRef, isMutable : bool, id : int) =
+    type Var private(name : string, typ : TypeRef, isMutable : bool, id : int) =
+        static let mutable currentId = 0
+
         member x.Name = name
         member x.Type = typ
         member x.IsMutable = isMutable
@@ -176,13 +301,24 @@ module rec Stuff =
             | :? Var as o -> id = o.Id
             | _ -> false
 
+        new(name : string, typ : TypeRef, isMutable : bool) = 
+            Var(name, typ, isMutable, System.Threading.Interlocked.Increment(&currentId))
+            
+        new(name : string, typ : TypeRef) = 
+            Var(name, typ, false, System.Threading.Interlocked.Increment(&currentId))
 
     type ExprInfo =
         | EValue of value : Literal
         | EVar of Var
-        | ECall of f : FunctionRef
+        | ECall of f : ExternalFunctionInfo
         | ELambda of Var
-        
+        | ENewRecord of TypeRef
+        | ESequential
+        | EFieldGet of name : string * dst : TypeRef
+        | EFieldSet of name : string * dst : TypeRef
+        | ELet of v : Var
+        | EDefault of TypeRef
+
     type Expr(info : ExprInfo, typ : TypeRef, children : list<Expr>) =
         member x.Info = info
         member x.Type = typ
@@ -198,7 +334,8 @@ module rec Stuff =
         static member Value(value : obj, t : TypeRef) =
             let value = Literal.ofTypedValue t value
             Expr(EValue value, value.ltype, [])
-        static member Call(f : FunctionRef, args : list<Expr>) = 
+
+        static member Call(f : ExternalFunctionInfo, args : list<Expr>) = 
             let argTypes = args |> List.map (fun e -> e.Type)
             match TypeRef.tryApply argTypes f.ftype with
                 | Some ret ->
@@ -206,12 +343,30 @@ module rec Stuff =
                 | None ->
                     failwithf 
                         "[FShade] inconsistent argument types for %s: [%s]" 
-                        (FunctionRef.toString f) 
+                        (ExternalFunctionInfo.toString f) 
                         (argTypes |> List.map TypeRef.toString |> String.concat "; ")
 
         static member Lambda(v : Var, e : Expr) =
             let t = RFunction(v.Type, e.Type)
             Expr(ELambda v, t, [e])
+
+        static member NewRecord(t : TypeRef, values : list<Expr>) =
+            Expr(ENewRecord t, t, values)
+
+        static member Sequential(l : Expr, r : Expr) =
+            Expr(ESequential, r.Type, [l;r])
+            
+        static member FieldGet(dst : Expr, name : string, typ : TypeRef) =
+            Expr(EFieldGet(name, typ), typ, [dst])
+
+        static member FieldSet(dst : Expr, name : string, value : Expr) =
+            Expr(EFieldSet(name, dst.Type), RUnit, [dst; value])
+
+        static member Let(v : Var, value : Expr, body : Expr) =
+            Expr(ELet v, body.Type, [value; body])
+
+        static member Default(t : TypeRef) =
+            Expr(EDefault t, t, [])
 
     module Patterns =
         let (|Var|_|) (e : Expr) =
@@ -242,7 +397,38 @@ module rec Stuff =
                         | _ -> Some([v], b)
                 | _ ->
                     None
+                    
+        let (|NewRecord|_|) (e : Expr) =
+            match e.Info with
+                | ENewRecord(t) -> Some(t, e.Children)
+                | _ -> None
+                
+        let (|Sequential|_|) (e : Expr) =
+            match e.Info with
+                | ESequential -> Some(List.head e.Children, List.item 1 e.Children)
+                | _ -> None
 
+        let (|FieldSet|_|) (e : Expr) =
+            match e.Info with
+                | EFieldSet(name,_) -> Some(List.head e.Children, name, List.item 1 e.Children)
+                | _ -> None
+        
+        let (|FieldGet|_|) (e : Expr) =
+            match e.Info with
+                | EFieldGet(name,_) -> Some(List.head e.Children, name)
+                | _ -> None
+        
+        
+        let (|Let|_|) (e : Expr) =
+            match e.Info with
+                | ELet v -> Some(v, List.head e.Children, List.item 1 e.Children)
+                | _ -> None
+        
+        let (|Default|_|) (e : Expr) =
+            match e.Info with
+                | EDefault t -> Some(t)
+                | _ -> None
+        
     module Expr =
         open Patterns
 
@@ -277,45 +463,51 @@ module rec Stuff =
 
                     let exprs = args |> List.map toString
                     let args = callArgs f.fparameters exprs
-
-                    sprintf "%s(%s)" f.fname (String.concat ", " args)
+                    
+                    sprintf "(%s %s)" (f.ffullname) (String.concat " " args)
                 | Lambdas(vs, b) ->
                     let vs = vs |> List.map (fun v -> sprintf "(%s : %s)" v.Name (TypeRef.toString v.Type)) |> String.concat " "
                     sprintf "fun %s -> %s" vs (toString b)
                 
+                | NewRecord(t, values) ->
+                    match t with
+                        | RImported(info, Some (DRecord fields)) ->  
+                            List.zip fields values |> List.map (fun ((f,_),v) ->
+                                sprintf "%s = %s" f (toString v)
+                            )
+                            |> String.concat "; "
+                            |> sprintf "{ %s }"
+                        | _ ->
+                            failwith "not a record"
+
+                | Sequential(l,r) ->
+                    sprintf "%s; %s" (toString l) (toString r)
+
+                | FieldSet(l,n,v) ->
+                    sprintf "%s.%s <- %s" (toString l) n (toString v)
+                    
+                | FieldGet(l,n) ->
+                    sprintf "%s.%s" (toString l) n
+
+                | Let(v,e,b) ->
+                    if v.IsMutable then
+                        sprintf "let mutable %s = %s in %s" v.Name (toString e) (toString b)
+                    else 
+                        sprintf "let %s = %s in %s" v.Name (toString e) (toString b)
+
+                | Default t ->
+                    sprintf "default<%s>" (TypeRef.toString t)
+
+
                 | _ ->
                     failwith "unreachable"
 
-    type FunctionDef =
-        {
-            fsignature      : FunctionRef
-            fexpr           : Expr
-        }
-    module FunctionDef =
-        open Patterns
-        
-        let toString (d : FunctionDef) =
-            match d.fexpr with
-                | Lambdas(vs, b) ->
-                    let args =
-                        d.fsignature.fparameters |> List.map (fun block ->
-                            block
-                            |> List.map (fun (name, typ) -> sprintf "%s : %s" name (TypeRef.toString typ))
-                            |> String.concat ", "
-                            |> sprintf "(%s)"
-                        )
-                        |> String.concat " "
-                    sprintf "let %s (%s) : %s = %s" d.fsignature.fname args (TypeRef.toString b.Type) (Expr.toString b)
 
-                | b ->
-                    sprintf "let %s : %s = %s" d.fsignature.fname (TypeRef.toString b.Type) (Expr.toString b)
-                
-        
     type Module =
         {
             mname       : string
-            mtypes      : Map<string, TypeDef>
-            mfunctions  : Map<FunctionRef, FunctionDef>
+            mtypes      : Map<ExternalTypeInfo, TypeDef>
+            mfunctions  : Map<ExternalFunctionInfo, FunctionDef>
         }
 
     module Module =
@@ -328,10 +520,11 @@ module rec Stuff =
                 }
             String.concat "\r\n" all
 
-module AdapterStuff =
+module rec AdapterStuff =
     open System
     open System.Reflection
     open Stuff
+    open Microsoft.FSharp.Reflection
     open Microsoft.FSharp.Quotations
     open Microsoft.FSharp.Quotations.Patterns
 
@@ -340,368 +533,578 @@ module AdapterStuff =
 
     type TranslationState =
         {
-            types       : hmap<Type, TypeRef>
-            functions   : hmap<MethodInfo, FunctionRef>
+            typeImps    : MapExt<string, Set<ExternalTypeInfo>>
+            typeDefs    : hmap<Type, TypeDef>
+            typeRefs    : hmap<Type, TypeRef>
+            
+            funImps     : MapExt<string, Set<ExternalFunctionInfo>>
+            funRefs     : hmap<MethodBase, ExternalFunctionInfo>
+            funDefs     : hmap<MethodBase, FunctionDef>
+
             variables   : MapExt<Var, TVar>
-            currentId   : int
         }
 
-        static member Empty = { types = HMap.empty; functions = HMap.empty; variables = MapExt.empty; currentId = 0 }
+        static member Empty = { typeImps = MapExt.empty; typeRefs = HMap.empty; typeDefs = HMap.empty; funImps = MapExt.empty; funRefs = HMap.empty; funDefs = HMap.empty; variables = MapExt.empty }
 
-    module private Translate =
+    module TranslationState =
+        let importType (t : ExternalTypeInfo) (s : TranslationState) =
+            { s with
+                typeImps = MapExt.alter t.eassembly (Option.defaultValue Set.empty >> Set.add t >> Some) s.typeImps
+            }
 
-        let getType (t : System.Type) =
-            State.custom (fun s ->
-                match HMap.tryFind t s.types with
-                    | Some t ->
-                        s, t
-                    | None ->
-                        let r = TypeRef.tryOfSimpleType t |> Option.get
-                        let s = { s with types = HMap.add t r s.types }
-                        s, r
-            )
+        let importFunction (t : ExternalFunctionInfo) (s : TranslationState) =
+            let ass = t.fdeclaring.eassembly
+            { s with
+                funImps = MapExt.alter ass (Option.defaultValue Set.empty >> Set.add t >> Some) s.funImps
+            }
 
-        let getVar (v : Var) =
-            State.custom (fun s ->
-                match MapExt.tryFind v s.variables with
-                    | Some v ->
-                        s, v
-                    | None ->
-                        let mutable s = s
-                        let typ = getType(v.Type).Run(&s)
-                        let r = TVar(v.Name, typ, v.IsMutable, s.currentId)
-                        let s = { s with variables = MapExt.add v r s.variables; currentId = s.currentId + 1 }
-                        s, r
-            )
+        let defineType (t : Type) (def : TypeDef) (s : TranslationState) =
+            { s with
+                typeDefs = HMap.add t def s.typeDefs
+            }
+            
+        let defineFunction (t : MethodBase) (def : FunctionDef) (s : TranslationState) =
+            { s with
+                funDefs = HMap.add t def s.funDefs
+            }
+        let declare (t : Var) (def : TVar) (s : TranslationState) =
+            { s with
+                variables = MapExt.add t def s.variables
+            }
 
-        let getFunction (mi : MethodInfo) =
-            State.custom (fun s ->
-                match HMap.tryFind mi s.functions with
-                    | Some v ->
-                        s, v
-                    | None ->
-                        let mutable s = s
-                        let args = 
-                            mi.GetParameters() 
-                            |> Array.map (fun p -> [p.Name, getType(p.ParameterType).Run(&s)]) 
-                            |> Array.toList
-
-                        let ret = getType(mi.ReturnType).Run(&s)
-
-                        let r = 
-                            {
-                                fname = mi.Name
-                                fparameters = args
-                                freturn = ret
-                            }
-                        let s = { s with functions = HMap.add mi r s.functions }
-                        s, r
-
-            )
+        let toModule (s : TranslationState) =
+            {
+                mname = ExternalTypeInfo.Top.efullname
+                mfunctions = s.funDefs |> HMap.toSeq |> Seq.map (fun (_,d) -> d.finfo, d) |> Map.ofSeq
+                mtypes = s.typeDefs |> HMap.toSeq |> Seq.map (fun (_,d) -> d.dinfo, d) |> Map.ofSeq
+            }
             
 
-    let rec translateS (e : Expr) =
-        state {
-            match e with
-                | Value(v,t) -> 
-                    let! t = Translate.getType t
-                    return TExpr.Value(v, t)
 
-                | Var v ->
-                    let! v = Translate.getVar v
-                    return TExpr.Var v
+    module ExternalTypeInfo =
+        open System.Text.RegularExpressions
+
+        let private genericRx = Regex @"^(.*?)`([0-9]+)"
+        
+        let rec private getNamespace (t : Type) =
+            let td = t.DeclaringType
+            if isNull td then
+                if System.String.IsNullOrWhiteSpace t.Namespace || t.Namespace = "global" then
+                    []
+                else
+                    t.Namespace.Split([| '.' |], StringSplitOptions.None) |> Array.toList
+            else
+                if td.IsGenericType then failwith "[FShade] declaring types may currently not be generic"
+                let nd = getNamespace td
+                nd @ [td.Name]
+
+        let private (|Generic|NonGeneric|) (t : System.Type) =
+            let ns = getNamespace t
+
+            if t.IsGenericType then
+                let m = genericRx.Match t.Name
+                if m.Success then
+                    let name = m.Groups.[1].Value
+                    let cnt = m.Groups.[2].Value |> int
+                    Generic(ns, name, cnt)
+
+                else
+                    NonGeneric(ns, t.Name)
+            else
+                NonGeneric(ns, t.Name)
+
+        let ofTypeS (t : System.Type) =
+            state {
+                let ass = t.Assembly.GetName().Name
+
+                match t with
+                    | Generic(ns, name, cnt) ->
+                        let! targs = t.GetGenericArguments() |> Array.toList |> List.mapS TypeRef.ofTypeS
+                        let res =  
+                            {
+                                eassembly = ass
+                                enamespace = ns
+                                ename = name
+                                egeneric = targs
+                            }
+                        do! State.modify (TranslationState.importType res)
+                        return res
+
+                    | NonGeneric(ns, name) ->
+                        let res = 
+                            {
+                                eassembly = ass
+                                enamespace = ns
+                                ename = name
+                                egeneric = []
+                            }
+                        
+                        do! State.modify (TranslationState.importType res)
+                        return res
+            }
+            
+    module TypeDef =
+        let tryOfTypeS (t : Type) =
+            state {
+                let! s = State.get
+                match HMap.tryFind t s.typeDefs with
+                | Some def ->
+                    return Some def 
+                | None -> 
+                    let! ref = ExternalTypeInfo.ofTypeS t
+
+                    if FSharpType.IsRecord(t, true) then
+                        let! fields = 
+                            FSharpType.GetRecordFields(t, true)
+                            |> Array.toList
+                            |> List.mapS (fun p ->
+                                state {
+                                    let! t = TypeRef.ofTypeS p.PropertyType
+                                    return (p.Name, t)
+                                }
+                            )
+                            
+                        let def = { dinfo = ref; ddef = DRecord(fields) }
+                        do! State.modify (TranslationState.defineType t def)
+                        return Some def
+
+                    elif FSharpType.IsUnion(t, true) then
+                        let! cases =
+                            FSharpType.GetUnionCases(t, true) |> Array.toList |> List.mapS (fun c ->
+                                state {
+                                    let! fields = 
+                                        c.GetFields() 
+                                        |> Array.toList
+                                        |> List.mapS (fun p ->
+                                            state {
+                                                let! t = TypeRef.ofTypeS p.PropertyType
+                                                return (p.Name, t)
+                                            }
+                                        )
+
+                                    return { uname = c.Name; ufields = fields }
+                                }
+                            )
+                            
+                        let! ref = ExternalTypeInfo.ofTypeS t
+
+                        
+                        let def = { dinfo = ref; ddef = DUnion(cases) }
+                        do! State.modify (TranslationState.defineType t def)
+                        return Some def
+
+                    else   
+                        let isReflectable = 
+                            t.GetConstructors(BindingFlags.NonPublic ||| BindingFlags.Public ||| BindingFlags.CreateInstance)
+                            |> Array.exists (Expr.TryGetReflectedDefinition >> Option.isSome)
+
+                        if isReflectable then
+                            let! fields = 
+                                t.GetFields(BindingFlags.NonPublic ||| BindingFlags.Public ||| BindingFlags.Instance)
+                                |> Array.toList
+                                |> List.mapS (fun p ->
+                                    state {
+                                        let! t = TypeRef.ofTypeS p.FieldType
+                                        return (p.Name, t)
+                                    }
+                                )
+                            let! ref = ExternalTypeInfo.ofTypeS t
+                            let def = { dinfo = ref; ddef = DObject fields }
+                            do! State.modify (TranslationState.defineType t def)
+                            return Some def
+                        else
+
+                            return None
+                }
                 
-                | Call(None, mi, args) ->
-                    let! f = Translate.getFunction mi
-                    let! args = List.mapS translateS args
-                    return TExpr.Call(f, args)
+        let ofTypeS (t : Type) =
+            state {
+                match! tryOfTypeS t with
+                    | Some def -> return def
+                    | None -> return failwithf "[FShade] cannot translate type %A" t
+            }
 
-                | Lambda(v, b) ->
-                    let! v = Translate.getVar v
-                    let! b = translateS b
-                    return TExpr.Lambda(v, b)
+    module FunctionDef =
+        open Microsoft.FSharp.Quotations.DerivedPatterns
+
+        let rec private constructorBody (t : Type) (e : Expr) : Expr =
+            match e with
+                | Sequential(Sequential(a,b), c) ->
+                    constructorBody t (Expr.Sequential(a, Expr.Sequential(b,c)))
+
+                | Lambdas(vs, Sequential(NewObject(_,_), b)) ->
+                    let self = Var("self", t, true)
+                    let body = 
+                        Expr.Let(self, Expr.DefaultValue(t),
+                            Expr.Sequential(
+                                b.Substitute(fun v -> if v.Name = "this" then Some (Expr.Var self) else None),
+                                Expr.Var self
+                            )
+                        )
+
+                    let rec bindings (v : list<Var>) (e : list<Expr>) (b : Expr) =
+                        match v, e with
+                            | [], [] -> b
+                            | v :: vs, e :: es -> Expr.Let(v,e,bindings vs es b)
+                            | _ -> failwith "asdasdasd"
+
+                    let rec wrap (vs : list<list<Var>>) (e : Expr) =
+                        match vs with
+                            | [] -> e
+                            | h :: t ->
+                                match h with 
+                                    | [h] -> Expr.Lambda(h, wrap t e)
+                                    | hs -> 
+                                        let typ = FSharpType.MakeTupleType (hs |> List.map (fun h -> h.Type) |> List.toArray)
+                                        let tup = Var("tup", typ)
+                                        let get = hs |> List.mapi (fun i v -> Expr.TupleGet(Expr.Var tup, i))
+                                        Expr.Lambda(tup, bindings hs get (wrap t e))
+
+                    wrap vs body
 
                 | _ ->
-                    return failwith "implement me"
-        } 
+                    e
+
+        let rec private memberBody (t : Type) (e : Expr) =
+            match e with
+                | Lambda(v,Lambda(u, b)) when u.Type = typeof<unit> ->
+                    memberBody t (Expr.Lambda(v, b))
+                | _ ->
+                    printfn "%A" e
+                    e
+        let private getParameters (e : Expr) =
+            match e with
+                | Lambdas(vs, _) ->
+                    vs
+                | _ ->
+                    []
+
+        let tryOfMethodS (m : MethodBase) =
+            state {
+                let! s = State.get
+                match HMap.tryFind m s.funDefs with
+                    | Some d ->
+                        return Some d
+                    | None ->
+                        match Expr.TryGetReflectedDefinition m with
+                            | Some expr ->
+                                let expr = 
+                                    if m.IsConstructor then constructorBody m.DeclaringType expr
+                                    elif not m.IsStatic then memberBody m.DeclaringType expr
+                                    else expr
+
+                                let! e = TExpr.ofExpr expr
+                                
+                                let! info = ExternalFunctionInfo.tryOfMethodS false m
+                                let info = Option.get info
+                                let! pars = 
+                                    getParameters expr |> List.mapS (fun v ->
+                                        v |> List.mapS (fun v ->
+                                            state {
+                                                let! t = TypeRef.ofTypeS v.Type
+                                                return (v.Name, t)
+                                            }
+                                        )
+                                    )
+
+                                let info =
+                                    {
+                                        info with
+                                            fdeclaring = ExternalTypeInfo.Top
+                                            fparameters = pars
+                                    }
+
+                                let res =
+                                    {
+                                        finfo = info
+                                        fexpr = e
+                                    }
+                                
+                                do! State.modify (fun s ->
+                                        let update (o : Option<Set<ExternalFunctionInfo>>) =
+                                            match o with
+                                                | Some s ->
+                                                    let s = Set.remove info s
+                                                    if Set.isEmpty s then None
+                                                    else Some s
+                                                | None ->
+                                                    None
+                                        { s with
+                                            funImps = MapExt.alter info.fdeclaring.eassembly update s.funImps
+                                            funRefs = HMap.add m info s.funRefs
+                                            funDefs = HMap.add m res s.funDefs
+                                        }
+                                    )
+
+                                return Some res
+
+                            | None ->
+                                return None
+            }
+
+    module FunctionRef =
+        let ofMethodS (m : MethodBase) =
+            state {
+                match! FunctionDef.tryOfMethodS m with
+                    | Some d -> return d.finfo
+                    | None -> return! ExternalFunctionInfo.ofMethodS m
+            }
+
+    module TypeRef =
+        let ofTypeS (t : Type) =
+            state {
+                let! s = State.get
+                match HMap.tryFind t s.typeRefs with
+                | Some t ->
+                    return t
+                | None -> 
+                    match TypeRef.tryOfSimpleType t with
+                    | Some simple ->
+                        return simple
+                    | None ->
+                        if FSharpType.IsTuple(t) then
+                            let! elements = 
+                                FSharpType.GetTupleElements t
+                                |> Array.toList
+                                |> List.mapS ofTypeS
+                            return RTuple elements
+
+                        elif FSharpType.IsFunction(t) then
+                            let a,b = FSharpType.GetFunctionElements(t)
+                            let! a = ofTypeS a
+                            let! b = ofTypeS b
+                            return RFunction(a,b)
+
+                        else
+                            let! def = TypeDef.tryOfTypeS t
+                            match def with
+                            | Some def -> 
+                                return RImported(def.dinfo, Some def.ddef)
+                            | None ->
+                                let! e = ExternalTypeInfo.ofTypeS t
+                                return RImported(e, None)
+                            
+            }
+
+    module ExternalFunctionInfo =
+
+        let private getParameterBlocksS (m : MethodBase) =
+            state {
+                let! pars = 
+                    m.GetParameters()
+                    |> Array.toList
+                    |> List.mapS (fun p ->
+                        state {
+                            let! t = TypeRef.ofTypeS p.ParameterType
+                            return p.Name, t
+                        }
+                    )
+
+                let att = 
+                    let a = m.GetCustomAttribute<CompilationArgumentCountsAttribute>()
+                    if isNull (a :> Attribute) then None
+                    else Some(Seq.toList a.Counts)
+
+                match att with
+                    | None ->
+                        match pars with
+                            | [] -> return []
+                            | _ -> return [pars]
+                    | Some att ->
+                        let rec take (n : int) (l : list<'a>) =
+                            if n <= 0 then 
+                                [], l
+                            else
+                                match l with
+                                | h :: t ->
+                                    let a,b = take (n - 1) t
+                                    h::a, b
+                                | _ ->
+                                    failwith "index out of range"
+
+                        return [
+                            let mutable rem = pars
+                            for c in att do
+                                let (a,b) = take c rem
+                                yield a
+                                rem <- b
+                                
+                            if not (List.isEmpty rem) then 
+                                failwithf "[FShade] bad argument counts for method %A" m
+                        ]
+            }
+
+        let tryOfMethodS (import : bool) (mb : MethodBase) =
+            state {
+                let! s = State.get
+                match HMap.tryFind mb s.funRefs with
+                    | Some r ->
+                        return Some r
+                    | None -> 
+                        let! d = ExternalTypeInfo.ofTypeS mb.DeclaringType
+                        let! self = TypeRef.ofTypeS mb.DeclaringType
+                        let! gen =
+                            if mb.IsGenericMethod then mb.GetGenericArguments() |> Array.toList |> List.mapS TypeRef.ofTypeS
+                            else State.value []
+
+                        let! pars = getParameterBlocksS mb
+                        
+                        match mb with
+                        | :? MethodInfo as m ->
+                            let! ret = TypeRef.ofTypeS m.ReturnType
+                            let res = 
+                                {
+                                    fdeclaring  = d
+                                    fname       = m.Name
+                                    fgeneric    = gen
+                                    fparameters = pars
+                                    freturn     = ret
+                                }
+                            if import then
+                                do! State.modify (TranslationState.importFunction res)
+                                do! State.modify (fun s -> { s with funRefs = HMap.add mb res s.funRefs })
+
+                            return Some res
+      
+                        | :? ConstructorInfo as c ->
+                            let! ret = TypeRef.ofTypeS mb.DeclaringType
+                            let res = 
+                                {
+                                    fdeclaring  = d
+                                    fname       = sprintf "%s_ctor" d.ename
+                                    fgeneric    = gen
+                                    fparameters = pars
+                                    freturn     = ret
+                                }
+                                
+                            if import then
+                                do! State.modify (TranslationState.importFunction res)
+                                do! State.modify (fun s -> { s with funRefs = HMap.add mb res s.funRefs })
+                            return Some res
+                            
+
+                        | _ ->
+                            return None
+            }
+
+        let ofMethodS (m : MethodBase) =
+            state {
+                match! tryOfMethodS true m with
+                    | Some m -> return m
+                    | None -> return failwithf "[FShade] cannot import function %A" m
+            }
+
+    module TVar =
+        let ofVarS (v : Var) =
+            state {
+                let! s = State.get
+                match MapExt.tryFind v s.variables with
+                    | Some v ->
+                        return v
+                    | None ->
+                        let! typ = TypeRef.ofTypeS v.Type
+                        let r = TVar(v.Name, typ, v.IsMutable)
+                        do! State.modify (TranslationState.declare v r)
+                        return r
+            }
+
+  
+    module TExpr =
+        let rec ofExpr (e : Expr) =
+            state {
+                match e with
+                    | Value(v,t) -> 
+                        let! t = TypeRef.ofTypeS t
+                        return TExpr.Value(v, t)
+
+                    | Var v ->
+                        let! v = TVar.ofVarS v
+                        return TExpr.Var v
+                
+                    | Call(Some t, mi, args) ->
+                        let! f = FunctionRef.ofMethodS mi
+                        let! args = List.mapS ofExpr (t :: args)
+                        return TExpr.Call(f, args)
+                        
+
+                    | Call(None, mi, args) ->
+                        let! f = FunctionRef.ofMethodS mi
+                        let! args = List.mapS ofExpr args
+                        return TExpr.Call(f, args)
+
+                    | Lambda(v, b) ->
+                        let! v = TVar.ofVarS v
+                        let! b = ofExpr b
+                        return TExpr.Lambda(v, b)
+
+                    | NewRecord(t, values) ->
+                        let! t = TypeRef.ofTypeS t
+                        let! values = values |> List.mapS ofExpr
+                        return TExpr.NewRecord(t, values)
+
+                    | NewObject(ctor, values) ->
+                        let! c = FunctionRef.ofMethodS ctor
+                        let! values = values |> List.mapS ofExpr
+                        return TExpr.Call(c, values)
+
+                    | Sequential(l,r) ->
+                        let! l = ofExpr l
+                        let! r = ofExpr r
+                        return TExpr.Sequential(l,r)
+                        
+                    | FieldSet(Some t, n, v) ->
+                        let! t = ofExpr t
+                        let! v = ofExpr v
+                        return TExpr.FieldSet(t, n.Name, v)
+                        
+                    | FieldGet(Some t, n) ->
+                        let! t = ofExpr t
+                        let! typ = TypeRef.ofTypeS e.Type
+                        return TExpr.FieldGet(t, n.Name, typ)
+
+                    | Let(v,e,b) ->
+                        let! v = TVar.ofVarS v
+                        let! e = ofExpr e
+                        let! b = ofExpr b
+                        return TExpr.Let(v,e,b)
+
+                    | DefaultValue t ->
+                        let! t = TypeRef.ofTypeS t
+                        return TExpr.Default t
+
+                    | PropertyGet(Some e, prop, []) when FSharpType.IsRecord e.Type ->
+                        let! e = ofExpr e
+                        let! t = TypeRef.ofTypeS prop.PropertyType
+                        return TExpr.FieldGet(e, prop.Name, t)
+                        
+                    | PropertyGet(Some e, prop, []) ->
+                        return! ofExpr (Expr.Call(e, prop.GetMethod, []))
+
+                    | e ->
+                        return failwithf "implement me: %A" e
+            } 
 
     let translate (e : Expr) =
         let mutable s = TranslationState.Empty
-        translateS(e).Run(&s)
+        let ex = TExpr.ofExpr(e).Run(&s)
+
+        let m = TranslationState.toModule s
+
+
+        let def = FunctionDef.ofExpr "main" ex
+        { m with mfunctions = Map.add def.finfo def m.mfunctions }
         
-module rec Expressions =
-    
-    type Module =
-        {
-            mtypes      : Map<string, TypeDef>
-            mfunctions  : Map<string, FunctionDef>
+type Rec =
+    {
+        a : int
+        b : int
+    }
 
-        }
+[<ReflectedDefinition>]
+type A(a : int) =
+    member x.A = a
+    member x.Bla() = a * 2
+[<ReflectedDefinition>]
+let test (a : int) (b : int) = a + b
 
-    type FunctionSignature =
-        {
-            fname           : string
-            fparameters     : list<list<string * TType>>
-            freturn         : TType
-        }
-
-    type FunctionDef =
-        {
-            fsignature      : FunctionSignature
-            fexpr           : TExpr
-        }
-
-    type TypeDef =
-        | DRecord of name : string * fields : list<string * TType> 
-
-
-    type TType =
-        | TChar
-        | TString
-        | TInt of signed : bool * width : int
-        | TFloat of width : int
-        | TArray of dim : int * content : TType
-    
-        | TVector of dim : int * content : TType
-        | TMatrix of rows : int * cols : int * content : TType
-
-        | TTuple of list<TType>
-        | TRecord of list<string * TType>
-        | TUnion of list<string * list<string * TType>>
-        | TFunction of TType * TType
-
-    module TType =
-        open System
-
-        let rec toString (t : TType) =
-            match t with
-        
-                | TInt(false, 8) -> "byte"
-                | TInt(true, 8) -> "sbyte"
-                | TInt(true, 32) -> "int"
-                | TFloat(64) -> "float"
-
-                | TChar -> "char"
-                | TString -> "string"
-                | TInt(true,w) -> sprintf "int%d" w
-                | TInt(false,w) -> sprintf "uint%d" w
-                | TFloat w -> sprintf "float%d" w
-                | TArray(dim, bt) -> 
-                    let str = System.String(',', dim - 1)
-                    sprintf "%s[%s]" (toString bt) str
-                | TVector(dim, c) ->
-                    sprintf "Vec%d%s" dim (toString c)
-                | TMatrix(r,c, e) ->
-                    sprintf "Mat%d%d%s" r c (toString e)
-                | TTuple args ->
-                    args |> List.map toString |> String.concat " * " |> sprintf "(%s)"
-                | TRecord fields ->
-                    fields |> List.map (fun (name, typ) -> sprintf "%s : %s" name (toString typ)) |> String.concat "; " |> sprintf "{ %s }"
-
-                | TUnion cases ->
-                    cases
-                    |> List.map (fun (name, fields) -> 
-                        fields
-                        |> List.map (fun (name, typ) -> sprintf "%s : %s" name (toString typ))
-                        |> String.concat " * "
-                        |> sprintf "%s of %s" name
-                    )
-                    |> String.concat " | "
-                | TFunction(a,b) ->
-                    sprintf "%s -> %s" (toString a) (toString b)
-
-        let rec apply (targs : list<TType>) (fType : TType) =
-            match targs with
-                | [] -> fType
-                | h :: t ->
-                    match fType with
-                        | TFunction(a,b) ->
-                            if a <> h then failwithf "[FShade] inconsistent function argument. is %A but should be %A" h a
-                            apply t b
-                        | _ ->
-                            failwith "[FShade] not a function"
-
-        let rec ofType (t : System.Type) =
-            if t = typeof<int8> then TInt(true, 8)
-            elif t = typeof<uint8> then TInt(false, 8)
-            elif t = typeof<int16> then TInt(true, 16)
-            elif t = typeof<uint16> then TInt(false, 16)
-            elif t = typeof<int32> then TInt(true, 32)
-            elif t = typeof<uint32> then TInt(false, 32)
-            elif t = typeof<int64> then TInt(true, 64)
-            elif t = typeof<uint64> then TInt(false, 64)
-            elif t = typeof<float32> then TFloat(32)
-            elif t = typeof<float> then TFloat(64)
-            else failwith "not a primitive type"
-
-    type TLiteral =
-        | LInt of uint64
-        | LFloat of float
-        | LChar of char
-        | LString of string
-    
-    module TLiteral =
-        let toObject (t : TType) (l : TLiteral) =
-            match t, l with
-                | TInt(true, 8),    LInt v      -> int8 v :> obj
-                | TInt(false, 8),   LInt v      -> uint8 v :> obj
-                | TInt(true, 16),   LInt v      -> int16 v :> obj
-                | TInt(false, 16),  LInt v      -> uint16 v :> obj
-                | TInt(true, 32),   LInt v      -> int32 v :> obj
-                | TInt(false, 32),  LInt v      -> uint32 v :> obj
-                | TInt(true, 64),   LInt v      -> int64 v :> obj
-                | TInt(false, 64),  LInt v      -> uint64 v :> obj
-
-                | TFloat(32),       LFloat v    -> float32 v :> obj
-                | TFloat(64),       LFloat v    -> float v :> obj
-
-                | TChar,            LChar c     -> c :> obj
-                | TString,          LString str -> str :> obj
-
-                | _ -> failwithf "[Expr] inconsistent type (%A) for literal %A" t l
-
-        let ofObject (v : obj) =
-            match v with
-                | :? int8 as o -> LInt(uint64 o)
-                | :? uint8 as o -> LInt(uint64 o)
-                | :? int16 as o -> LInt(uint64 o)
-                | :? uint16 as o -> LInt(uint64 o)
-                | :? int32 as o -> LInt(uint64 o)
-                | :? uint32 as o -> LInt(uint64 o)
-                | :? int64 as o -> LInt(uint64 o)
-                | :? uint64 as o -> LInt(uint64 o)
-                | :? float32 as o -> LFloat(float o)
-                | :? float as o -> LFloat(o)
-                | :? char as o -> LChar(o)
-                | :? string as o -> LString(o)
-                | _ -> failwith "not a primitive value"
-
-        let toString (l : TLiteral) =
-            match l with
-                | LInt v -> sprintf "%d" v
-                | LFloat v -> sprintf "%f" v
-                | LChar c -> sprintf "'%c'" c
-                | LString str -> sprintf "\"%s\"" str
-
-    type TVar(name : string, vtype : TType, isMutable : bool) =
-        member x.Name = name
-        member x.Type = vtype
-        member x.IsMutable = isMutable
-        new(name,typ) = TVar(name, typ, false)
-
-    module TVar =
-        let toString (v : TVar) = v.Name
-
-    type TFunctionInfo =
-        {
-            fname : string
-            ftype : TType
-        }
-    
-
-    type TExprInfo =
-        | ELiteral of TLiteral
-        | EVar of TVar
-        | EApplication of TFunctionInfo 
-        | ELambda of TVar
-
-    and TExpr(etype : TType, einfo : TExprInfo, echildren : list<TExpr>) = 
-        member x.Type = etype
-        member x.Info = einfo
-        member x.Children = echildren
-
-        override x.ToString() =
-            match einfo with
-                | ELiteral o -> TLiteral.toString o
-                | EVar v -> TVar.toString v
-                | EApplication f ->
-                    echildren |> List.map string |> String.concat ", " |> sprintf "%s(%s)" f.fname
-                | _ ->
-                    match x with
-                        | Patterns.Lambdas(vs, b) ->
-                            let args = vs |> List.map (fun v -> sprintf "(%s : %s)" (TVar.toString v) (TType.toString v.Type)) |> String.concat " "
-                            sprintf "fun %s -> %s" args (string b)
-                        | _ ->
-                            failwith ""
-
-
-
-
-        static member Value(o : 'a) =
-            let t = TType.ofType typeof<'a>
-            let v = TLiteral.ofObject o
-            TExpr.Value(t, v)
-
-        static member Value(t : TType, l : TLiteral) = TExpr(t, ELiteral l, [])
-        static member Var(v : TVar) = TExpr(v.Type, EVar v, [])
-        static member Application(f : TFunctionInfo, args : list<TExpr>) =
-            let argTypes = args |> List.map (fun e -> e.Type)
-            let t = TType.apply argTypes f.ftype
-            TExpr(t, EApplication f, args)
-
-        static member Lambda(v : TVar, b : TExpr) =
-            let t = TFunction(v.Type, b.Type)
-            TExpr(t, ELambda v, [b])
-
-    module Patterns =
-    
-        let (|Value|_|) (e : TExpr) =
-            match e.Info with
-            | ELiteral v -> Some (TLiteral.toObject e.Type v)
-            | _ -> None
-        
-        let (|Var|_|) (e : TExpr) =
-            match e.Info with
-            | EVar v -> Some v
-            | _ -> None
-
-        let (|Application|_|) (e : TExpr) =
-            match e.Info with
-            | EApplication v -> Some(v, e.Children)
-            | _ -> None
-        
-        let (|Lamdda|_|) (e : TExpr) =
-            match e.Info with
-            | ELambda v -> Some(v, List.head e.Children)
-            | _ -> None
-
-        let rec (|Lambdas|_|) (e : TExpr) =
-            match e with
-                | Lamdda(a, x) ->
-                    match x with
-                        | Lambdas (b,c) ->
-                            Some (a::b, c)
-                        | _ ->
-                            Some ([a], x)
-                | _ ->
-                    None
-
-    module Adapter =
-        open Microsoft.FSharp.Quotations
-        open Microsoft.FSharp.Quotations.Patterns
-
-        let rec toTExpr (e : Expr) =
-            match e with
-                | Value(v,t) -> TExpr.Value(TType.ofType t, TLiteral.ofObject v)
-                | Var v -> TExpr.Var(TVar(v.Name, TType.ofType v.Type, v.IsMutable))
-                | Call(None, mi, args) ->
-                    let r = TType.ofType mi.ReturnType
-                    let targs = mi.GetParameters() |> Array.map (fun p -> p.ParameterType |> TType.ofType)
-                    let ftype = Array.foldBack (fun e f -> TFunction(e, f)) targs r
-
-                    let info =
-                        {
-                            fname = mi.Name
-                            ftype = ftype
-                        }
-                    TExpr.Application(info, List.map toTExpr args)
-
-                | Lambda(v, b) ->
-                    let v = TVar(v.Name, TType.ofType v.Type, v.IsMutable)
-                    TExpr.Lambda(v, toTExpr b)
-
-                | _ ->
-                    failwith ""
-
-
-    let test = Adapter.toTExpr <@ 1 + 2 @>
+let ex = <@ fun (a : int) -> A(a).Bla() @>

@@ -1,8 +1,395 @@
 #load "load.fsx"
 
+open System
+open System.Reflection
+open System.Threading
 open Aardvark.Base
 open Aardvark.Base.Monads.State
+open Microsoft.FSharp.Reflection
 
+module rec Ast =
+    
+    [<Struct; CustomEquality; CustomComparison; StructuredFormatDisplay("{AsString}")>]
+    type TypeId(id : int) =
+        member x.Id = id
+
+        member private x.AsString = x.ToString()
+
+        interface IComparable with
+            member x.CompareTo o =
+                match o with
+                | :? TypeId as o -> compare id o.Id
+                | _ -> failwith "cannot compare"
+                
+        interface IComparable<TypeId> with
+            member x.CompareTo o = compare id o.Id
+
+        override x.ToString() = sprintf "T%d" id
+        override x.GetHashCode() = id
+        override x.Equals o =
+            match o with
+            | :? TypeId as o -> id = o.Id
+            | _ -> false
+
+
+    type TypeInfo =
+        {
+            eassembly   : string
+            enamespace  : list<string>
+            ename       : string
+            egeneric    : list<TypeId>
+        }
+
+        static member Top  =
+            {
+                eassembly = ""
+                enamespace = []
+                ename = "Entry"
+                egeneric = []
+            }
+
+        member x.efullname = 
+            x.enamespace @ [x.ename] |> String.concat "."
+
+    module TypeInfo =
+        let toString (i : TypeInfo) = i.efullname
+
+
+    type UnionCase =
+        {
+            uname       : string
+            ufields     : list<string * TypeId>
+        }
+
+    type TypeDef =
+        | DUnit
+        | DInt of signed : bool * bits : int
+        | DFloat of bits : int
+        | DBool
+        | DChar
+        | DString
+        | DType
+
+        | DTuple of elements : list<TypeId>
+        | DFunction of TypeId * TypeId
+        | DRecord of info : TypeInfo * fields : list<string * TypeId> 
+        | DUnion of info : TypeInfo * cases : list<UnionCase>
+        | DObject of info : TypeInfo * fields : list<string * TypeId>
+
+    module TypeDef =
+
+        let rec name (ctx : Context) (d : TypeDef) =
+            match d with
+
+                | DInt(true, 32) -> "int"
+                | DInt(false, 8) -> "byte"
+                | DInt(true, 8) -> "sbyte"
+                | DFloat(64) -> "float"
+
+
+                | DUnit -> "unit"
+                | DInt(true, b) -> sprintf "int%d" b
+                | DInt(false, b) -> sprintf "uint%d" b
+                | DFloat b -> sprintf "float%d" b
+                | DBool -> "bool"
+                | DChar -> "char"
+                | DString -> "string"
+                | DType -> "System.Type"
+                | DTuple es -> es |> List.map (resolve ctx) |> String.concat " * "
+                | DFunction(a,b) -> sprintf "%s -> %s" (resolve ctx a) (resolve ctx b)
+                | DRecord(i,_) -> TypeInfo.toString i
+                | DUnion(i,_) -> TypeInfo.toString i
+                | DObject(i,_) -> TypeInfo.toString i
+
+        and private resolve (ctx : Context) (id : TypeId) : string =
+            match ctx.TryGetTypeDefinition id with
+                | Some def -> name ctx def
+                | None -> ctx.GetTypeInfo id |> TypeInfo.toString
+           
+           
+    type Context =
+        {
+            typeIds     : Set<TypeId>
+            typeInfos   : Map<TypeId, TypeInfo>
+            typeDefs    : Map<TypeId, TypeDef>
+        }
+        static member Empty = { typeIds = Set.empty; typeInfos = Map.empty; typeDefs = Map.empty }
+
+        member x.HasTypeInfo(id : TypeId) = Map.containsKey id x.typeInfos
+        member x.TryGetTypeInfo(id : TypeId) = Map.tryFind id x.typeInfos
+        member x.TryGetTypeDefinition(id : TypeId) = Map.tryFind id x.typeDefs
+        
+        member x.GetTypeInfo(id : TypeId) = Map.find id x.typeInfos
+        member x.GetTypeDefinition(id : TypeId) = Map.find id x.typeDefs
+
+    module Context =
+        let inline tryGetTypeInfo (id : TypeId) (c : Context) = c.TryGetTypeInfo id
+        let inline tryGetTypeDefinition (id : TypeId) (c : Context) = c.TryGetTypeDefinition id
+        let inline getTypeInfo (id : TypeId) (c : Context) = c.GetTypeInfo id
+        let inline getTypeDefinition (id : TypeId) (c : Context) = c.GetTypeDefinition id
+
+module rec Translate =
+    open Ast
+
+    type TranslationState =
+        {
+            currentId   : int
+            typeIds     : hmap<Type, TypeId>
+            context     : Context
+        }
+
+        static member Empty = { currentId = 0; typeIds = HMap.empty; context = Context.Empty }
+
+    module TranslationState =
+        let modifyContext (mapping : Context -> Context) =
+            State.modify (fun s -> { s with context = mapping s.context })
+
+        let newTypeId = 
+            State.custom (fun s ->
+                let id = s.currentId
+                { s with currentId = id + 1}, TypeId(id)
+            )
+
+        let getTypeId (t : Type) =
+            state {
+                let! s = State.get
+                match HMap.tryFind t s.typeIds with
+                    | Some id -> 
+                        return id
+                    | None ->
+                        let! id = newTypeId
+                        do! State.modify (fun s -> { s with context = { s.context with typeIds = Set.add id s.context.typeIds }; typeIds = HMap.add t id s.typeIds })
+                        return id
+            }
+            
+        let setTypeInfo (id : TypeId) (info : TypeInfo) =
+            modifyContext (fun ctx ->
+                { ctx with typeInfos = Map.add id info ctx.typeInfos }
+            )
+
+        let setTypeDef (id : TypeId) (def : TypeDef) =
+            modifyContext (fun ctx ->
+                { ctx with typeDefs = Map.add id def ctx.typeDefs }
+            )
+
+        let tryGetTypeInfo (id : TypeId) =
+            State.get |> State.map (fun s ->
+                s.context.TryGetTypeInfo id
+            )
+
+        let tryGetTypeDef (id : TypeId) =
+            State.get |> State.map (fun s ->
+                s.context.TryGetTypeDefinition id
+            )
+
+    module TypeInfo =
+
+        open System.Text.RegularExpressions
+
+        let private genericRx = Regex @"^(.*?)`([0-9]+)"
+        
+        let rec private getNamespace (t : Type) =
+            let td = t.DeclaringType
+            if isNull td then
+                if System.String.IsNullOrWhiteSpace t.Namespace || t.Namespace = "global" then
+                    []
+                else
+                    t.Namespace.Split([| '.' |], StringSplitOptions.None) |> Array.toList
+            else
+                if td.IsGenericType then failwith "[FShade] declaring types may currently not be generic"
+                let nd = getNamespace td
+                nd @ [td.Name]
+
+        let private (|Generic|NonGeneric|) (t : System.Type) =
+            let ns = getNamespace t
+
+            if t.IsGenericType then
+                let m = genericRx.Match t.Name
+                if m.Success then
+                    let name = m.Groups.[1].Value
+                    let cnt = m.Groups.[2].Value |> int
+                    Generic(ns, name, cnt)
+
+                else
+                    NonGeneric(ns, t.Name)
+            else
+                NonGeneric(ns, t.Name)
+
+        let ofTypeS (t : Type) =
+            state {
+                let! tid = TranslationState.getTypeId t
+                match! TranslationState.tryGetTypeInfo tid with
+                | Some info ->
+                    return info
+                | None ->
+                    let ass = t.Assembly.GetName().Name
+
+                    match t with
+                    | Generic(ns, name, cnt) ->
+                        let! targs = t.GetGenericArguments() |> Array.toList |> List.mapS TranslationState.getTypeId
+                        let info =  
+                            {
+                                eassembly = ass
+                                enamespace = ns
+                                ename = name
+                                egeneric = targs
+                            }
+
+                        do! TranslationState.setTypeInfo tid info
+                        return info
+
+                    | NonGeneric(ns, name) ->
+                        let info = 
+                            {
+                                eassembly = ass
+                                enamespace = ns
+                                ename = name
+                                egeneric = []
+                            }
+                        do! TranslationState.setTypeInfo tid info
+                        return info
+            }
+
+    module TypeDef =
+        let tryOfSimpleType =
+            LookupTable.lookupTable' [
+                typeof<char>, DChar
+                typeof<string>, DString
+
+                typeof<int8>, DInt(true, 8)
+                typeof<uint8>, DInt(false, 8)
+                typeof<int16>, DInt(true, 16)
+                typeof<uint16>, DInt(false, 16)
+                typeof<int32>, DInt(true, 32)
+                typeof<uint32>, DInt(false, 32)
+                typeof<int64>, DInt(true, 64)
+                typeof<uint64>, DInt(false, 64)
+
+                typeof<float16>, DFloat(16)
+                typeof<float32>, DFloat(32)
+                typeof<float>, DFloat(64)
+                
+                typeof<unit>, DUnit
+                typeof<bool>, DBool
+                typeof<System.Void>, DUnit
+                typeof<System.Type>, DType
+            ]
+            
+        let tryOfTypeS (t : Type) =
+            state {
+                let! tid = TranslationState.getTypeId t
+                match! TranslationState.tryGetTypeDef tid with
+                | Some def ->
+                    return Some def
+                | None -> 
+                    match tryOfSimpleType t with
+                    |  Some def ->
+                        let! info = TypeInfo.ofTypeS t 
+                        
+                        printfn "simple: %A" def
+                        do! TranslationState.setTypeDef tid def
+                        return Some def
+                    | None ->
+                        let! info = TypeInfo.ofTypeS t 
+                        if FSharpType.IsRecord(t, true) then
+                            let! fields = 
+                                FSharpType.GetRecordFields(t, true)
+                                |> Array.toList
+                                |> List.mapS (fun p ->
+                                    state {
+                                        let! t = TranslationState.getTypeId p.PropertyType
+                                        return (p.Name, t)
+                                    }
+                                )
+                            
+                            let def = DRecord(info, fields)
+                            do! TranslationState.setTypeDef tid def
+                            return Some def
+
+                        elif FSharpType.IsUnion(t, true) then
+                            let! cases =
+                                FSharpType.GetUnionCases(t, true) |> Array.toList |> List.mapS (fun c ->
+                                    state {
+                                        let! fields = 
+                                            c.GetFields() 
+                                            |> Array.toList
+                                            |> List.mapS (fun p ->
+                                                state {
+                                                    let! t = TranslationState.getTypeId p.PropertyType
+                                                    return (p.Name, t)
+                                                }
+                                            )
+
+                                        return { uname = c.Name; ufields = fields }
+                                    }
+                                )
+                            
+                        
+                            let def = DUnion(info, cases)
+                            do! TranslationState.setTypeDef tid def
+                            return Some def
+
+                        else   
+                            let isReflectable = 
+                                t.GetMembers(BindingFlags.NonPublic ||| BindingFlags.Public ||| BindingFlags.CreateInstance ||| BindingFlags.Instance ||| BindingFlags.Static)
+                                |> Seq.tryPick (function (:? MethodBase as m) -> Microsoft.FSharp.Quotations.Expr.TryGetReflectedDefinition m | _ -> None)
+                                |> Option.isSome
+                            
+                            if isReflectable then
+                                let! fields = 
+                                    t.GetFields(BindingFlags.NonPublic ||| BindingFlags.Public ||| BindingFlags.Instance)
+                                    |> Array.toList
+                                    |> List.mapS (fun p ->
+                                        state {
+                                            let! t = TranslationState.getTypeId p.FieldType
+                                            return (p.Name, t)
+                                        }
+                                    )
+
+                                let def = DObject(info, fields)
+                                do! TranslationState.setTypeDef tid def
+                                return Some def
+                            else
+
+                                return None
+                                
+            }
+            
+        let ofTypeS (t : Type) =
+            state {
+                match! tryOfTypeS t with
+                    | Some d -> return d
+                    | None -> return failwithf "no type definition for %A" t
+            }
+
+    let rec loadAllTypes() =
+        state {
+            let! s = State.get
+            let missing = HMap.filter (fun t tid -> not (s.context.HasTypeInfo tid)) s.typeIds
+            if not (HMap.isEmpty missing) then
+                //printfn "missing: %A" (missing)
+                for (t,tid) in missing do
+                    let! def = TypeDef.tryOfTypeS t
+                    match def with
+                        | None ->
+                            let! info = TypeInfo.ofTypeS t
+                            ()
+                        | _ ->
+                            ()
+                do! loadAllTypes()
+        }
+
+    let translateTypesS (ts : list<Type>) =
+        state {
+            let! defs = ts |> List.mapS TypeDef.ofTypeS
+            do! loadAllTypes()
+            return defs
+        }
+
+    let translateTypes (ts : list<Type>) =
+        let mutable state = TranslationState.Empty
+        let res = translateTypesS(ts).Run(&state)
+        state.context, res
 
 [<AutoOpen>]
 module rec Stuff =
@@ -72,9 +459,10 @@ module rec Stuff =
         | RUnit
         | RInt of signed : bool * bits : int
         | RFloat of bits : int
+        | RBool
         | RChar
         | RString
-
+        | RType
         | RImported of info : TypeInfo * def : Option<TypeDefInfo>
         | RTuple of elements : list<TypeRef>
         | RFunction of TypeRef * TypeRef
@@ -82,6 +470,7 @@ module rec Stuff =
     module TypeRef =
         let rec toString (t : TypeRef) =
             match t with
+            
             | RInt(false, 8) -> "byte"
             | RInt(true, 32) -> "int"
             | RFloat(64) -> "float"
@@ -90,8 +479,10 @@ module rec Stuff =
             | RInt(true, b) -> sprintf "int%d" b
             | RInt(false, b) -> sprintf "uint%d" b
             | RFloat b -> sprintf "float%d" b
+            | RBool -> "bool"
             | RChar -> "char"
             | RString -> "string"
+            | RType -> "System.Type"
 
             | RTuple [e] -> toString e
             | RTuple elements -> elements |> List.map toString |> String.concat " * " |> sprintf "(%s)"
@@ -120,6 +511,9 @@ module rec Stuff =
                 typeof<float>, RFloat(64)
                 
                 typeof<unit>, RUnit
+                typeof<bool>, RBool
+                typeof<System.Void>, RUnit
+                typeof<System.Type>, RType
             ]
 
         let tryApply (args : list<TypeRef>) (fType : TypeRef) =
@@ -127,9 +521,16 @@ module rec Stuff =
                 | [] -> 
                     Some fType
                 | a :: b ->
+                    
                     match fType with
                     | RFunction(h,t)
                     | RFunction(RTuple [h], t) when a = h -> tryApply b t
+
+                    | RFunction(RTuple (h :: hs), t) when a = h ->
+                        match hs with
+                            | [] -> tryApply b t
+                            | _ -> tryApply b (RFunction(RTuple hs, t))
+
                     | _ -> None
 
 
@@ -188,8 +589,10 @@ module rec Stuff =
         open Patterns
         
         let toString (d : FunctionDef) =
+            let prefix = if d.finfo.fstatic then "" else "instance "
+
             match d.fexpr with
-                | Lambdas(vs, b) ->
+                | Lambdas(_, b) ->
                     let b : Expr = b
                     let args =
                         d.finfo.fparameters |> List.map (fun block ->
@@ -199,10 +602,10 @@ module rec Stuff =
                             |> sprintf "(%s)"
                         )
                         |> String.concat " "
-                    sprintf "let %s %s : %s = %s" d.finfo.fname args (TypeRef.toString b.Type) (Expr.toString b)
+                    sprintf "%slet %s %s : %s = %s" prefix d.finfo.fname args (TypeRef.toString b.Type) (Expr.toString b)
 
                 | b ->
-                    sprintf "let %s : %s = %s" d.finfo.fname (TypeRef.toString b.Type) (Expr.toString b)
+                    sprintf "%slet %s : %s = %s" prefix d.finfo.fname (TypeRef.toString b.Type) (Expr.toString b)
 
         let ofExpr (name : string) (ex : Expr) =
             let args, body = 
@@ -322,6 +725,7 @@ module rec Stuff =
         | ESequential
         | EFieldGet of name : string * dst : TypeRef
         | EFieldSet of name : string * dst : TypeRef
+        | ETupleGet of index : int
         | ELet of v : Var
         | EDefault of TypeRef
 
@@ -329,6 +733,7 @@ module rec Stuff =
         member x.Info = info
         member x.Type = typ
         member x.Children = children
+
 
         static member Var(v : Var) =
             Expr(EVar v, v.Type, [])
@@ -373,6 +778,17 @@ module rec Stuff =
 
         static member Default(t : TypeRef) =
             Expr(EDefault t, t, [])
+
+        static member TupleGet(v : Expr, i : int) =
+            match v.Type with
+                | RTuple es ->
+                    match List.tryItem i es with
+                    | Some e ->
+                        Expr(ETupleGet i, e, [v])
+                    | None ->
+                        failwith "tuple-index out of bounds"
+                | _ ->
+                    failwith "not a tuple"
 
     module Patterns =
         let (|Var|_|) (e : Expr) =
@@ -433,6 +849,11 @@ module rec Stuff =
         let (|Default|_|) (e : Expr) =
             match e.Info with
                 | EDefault t -> Some(t)
+                | _ -> None
+
+        let (|TupleGet|_|) (e : Expr) =
+            match e.Info with
+                | ETupleGet i -> Some(List.head e.Children, i)
                 | _ -> None
         
     module Expr =
@@ -502,8 +923,10 @@ module rec Stuff =
                         sprintf "let %s = %s in %s" v.Name (toString e) (toString b)
 
                 | Default t ->
-                    sprintf "default<%s>" (TypeRef.toString t)
+                    sprintf "alloc<%s>" (TypeRef.toString t)
 
+                | TupleGet(e, i) ->
+                    sprintf "%s[[%d]]" (toString e) i
 
                 | _ ->
                     failwith "unreachable"
@@ -528,6 +951,7 @@ module rec Stuff =
 
 module rec AdapterStuff =
     open System
+    open System.Threading
     open System.Reflection
     open Stuff
     open Microsoft.FSharp.Reflection
@@ -537,9 +961,35 @@ module rec AdapterStuff =
     type private TExpr = Stuff.Expr
     type private TVar = Stuff.Var
 
+    [<Struct; CustomEquality; CustomComparison>]
+    type TypeId private(id : int) =
+        static let mutable current = 0
+        static member New = TypeId(Interlocked.Increment(&current))
+
+        member private x.Id = id
+
+        interface IComparable with
+            member x.CompareTo o =
+                match o with
+                | :? TypeId as o -> compare id o.Id
+                | _ -> failwith "cannot compare"
+                
+        interface IComparable<TypeId> with
+            member x.CompareTo o = compare id o.Id
+
+        override x.ToString() = sprintf "T%d" id
+        override x.GetHashCode() = id
+        override x.Equals o =
+            match o with
+            | :? TypeId as o -> id = o.Id
+            | _ -> false
+
+
+
     type TranslationState =
         {
             typeImps    : MapExt<string, Set<TypeInfo>>
+            typeIds     : hmap<Type, TypeId>
             typeDefs    : hmap<Type, TypeDef>
             typeRefs    : hmap<Type, TypeRef>
             
@@ -550,7 +1000,7 @@ module rec AdapterStuff =
             variables   : MapExt<Var, TVar>
         }
 
-        static member Empty = { typeImps = MapExt.empty; typeRefs = HMap.empty; typeDefs = HMap.empty; funImps = MapExt.empty; funRefs = HMap.empty; funDefs = HMap.empty; variables = MapExt.empty }
+        static member Empty = { typeIds = HMap.empty; typeImps = MapExt.empty; typeRefs = HMap.empty; typeDefs = HMap.empty; funImps = MapExt.empty; funRefs = HMap.empty; funDefs = HMap.empty; variables = MapExt.empty }
 
     module TranslationState =
         let importType (t : TypeInfo) (s : TranslationState) =
@@ -702,11 +1152,9 @@ module rec AdapterStuff =
                     else   
                         let isReflectable = 
                             t.GetMembers(BindingFlags.NonPublic ||| BindingFlags.Public ||| BindingFlags.CreateInstance ||| BindingFlags.Instance ||| BindingFlags.Static)
-                            |> Seq.choose (function (:? MethodBase as m) -> Some m | _ -> None)
-                            |> Seq.exists (Expr.TryGetReflectedDefinition >> Option.isSome)
-
-                        printfn "%A: %A" t.Name isReflectable
-
+                            |> Seq.tryPick (function (:? MethodBase as m) -> Expr.TryGetReflectedDefinition m | _ -> None)
+                            |> Option.isSome
+                            
                         if isReflectable then
                             let! fields = 
                                 t.GetFields(BindingFlags.NonPublic ||| BindingFlags.Public ||| BindingFlags.Instance)
@@ -791,12 +1239,27 @@ module rec AdapterStuff =
                     memberBody t (Expr.Lambda(v, b))
                 | _ ->
                     e
+
         let private getParameters (e : Expr) =
             match e with
                 | Lambdas(vs, _) ->
                     vs
                 | _ ->
                     []
+
+        let rec private detuple (e : Expr) =
+            match e with
+                | Lambdas(vs, body) ->
+                    let vs = vs |> List.concat
+
+                    
+                    let rec wrap (vs : list<Var>) (e : Expr) =
+                        match vs with
+                            | [] -> e
+                            | h :: t -> Expr.Lambda(h, wrap t e)
+                    wrap vs body
+                | _ ->
+                    e
 
         let tryOfMethodS (m : MethodBase) =
             state {
@@ -811,8 +1274,8 @@ module rec AdapterStuff =
                                     if m.IsConstructor then constructorBody m.DeclaringType expr
                                     elif not m.IsStatic then memberBody m.DeclaringType expr
                                     else expr
-
-                                let! e = TExpr.ofExpr expr
+                                    
+                                let! e = TExpr.ofExpr (detuple expr)
                                 
                                 let! info = FunctionInfo.tryOfMethodS false m
                                 let info : FunctionInfo = Option.get info
@@ -1101,6 +1564,10 @@ module rec AdapterStuff =
                     | PropertyGet(Some e, prop, []) ->
                         return! ofExpr (Expr.Call(e, prop.GetMethod, []))
 
+                    | TupleGet(e, i) ->
+                        let! e = ofExpr e
+                        return TExpr.TupleGet(e, i)
+
                     | e ->
                         return failwithf "implement me: %A" e
             } 
@@ -1114,7 +1581,12 @@ module rec AdapterStuff =
 
         let def = FunctionDef.ofExpr "main" ex
         { m with mfunctions = Map.add def.finfo def m.mfunctions }
-        
+  
+  
+
+
+
+
 type Rec =
     {
         a : int
@@ -1125,8 +1597,8 @@ type Rec =
 type A(a : int) =
     let b = 2 * a
     member x.A = a
-    member x.Bla() = a * b
+    member x.Bla(r : int, y :  int) = r*y + x.A * b
 [<ReflectedDefinition>]
 let test (a : int) (b : int) = a + b
 
-let ex = <@ fun (a : int) -> A(a).Bla() @>
+let ex = <@ fun (a : int) -> A(a).Bla(12, 13) @>

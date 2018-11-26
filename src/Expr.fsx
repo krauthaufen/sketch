@@ -37,7 +37,9 @@ module rec Ast =
             eassembly   : string
             enamespace  : list<string>
             ename       : string
+            eismodule   : bool
             egeneric    : list<TypeId>
+            eattributes : list<AttributeValue>
         }
 
         static member Top  =
@@ -45,7 +47,9 @@ module rec Ast =
                 eassembly = ""
                 enamespace = []
                 ename = "Entry"
+                eismodule = true
                 egeneric = []
+                eattributes = []
             }
 
         member x.efullname = 
@@ -70,6 +74,8 @@ module rec Ast =
         | DString
         | DType
 
+        | DEnum of signed : bool * bits : int * values : list<string * uint64>
+        | DArray of elementType : TypeId
         | DTuple of elements : list<TypeId>
         | DFunction of TypeId * TypeId
         | DRecord of info : TypeInfo * fields : list<string * TypeId> 
@@ -86,7 +92,8 @@ module rec Ast =
                 | DInt(true, 8) -> "sbyte"
                 | DFloat(64) -> "float"
 
-
+                | DArray(e) -> sprintf "array<%s>" (resolve ctx e)
+                | DEnum(s,b,_) -> sprintf "enum<%s>" (name ctx (DInt(s,b)))
                 | DUnit -> "unit"
                 | DInt(true, b) -> sprintf "int%d" b
                 | DInt(false, b) -> sprintf "uint%d" b
@@ -105,7 +112,70 @@ module rec Ast =
             match ctx.TryGetTypeDefinition id with
                 | Some def -> name ctx def
                 | None -> ctx.GetTypeInfo id |> TypeInfo.toString
-           
+   
+   
+    type Literal =
+        | LInt of signed : bool * bits : int * value : uint64
+        | LFloat of bits : int * value : float
+        | LBool of value : bool
+        | LChar of value : char
+        | LString of value : string
+        | LUnit
+        | LNull of typ : TypeId
+        | LArray of elementType : TypeId * values : list<Literal>
+        | LType of TypeId
+        | LEnum of signed : bool * bits : int * cases : list<string * uint64> * value : uint64
+        member x.GetType(ctx : Context) =
+            match x with
+                | LInt(s,b,_) -> DInt(s,b)
+                | LFloat(b,_) -> DFloat(b)
+                | LBool _ -> DBool
+                | LChar _ -> DChar
+                | LString _ -> DString
+                | LUnit -> DUnit
+                | LNull t -> ctx.GetTypeDefinition t
+                | LArray(t,_) -> DArray t
+                | LType _ -> DType
+                | LEnum(s,b,c,_) -> DEnum(s,b,c)
+
+    module Literal =
+        let ofTypedValue (ctx : Context) (tid : TypeId) (value : obj) =
+            let t = ctx.GetTypeDefinition tid
+            if isNull value then
+                match t with
+                    | DUnit -> LUnit
+                    | _ -> LNull tid
+            else
+                match t with
+                    | DEnum(s,b,vs) -> LEnum(s,b,vs, System.Convert.ToUInt64 value)
+                    | DInt(s,b) -> LInt(s, b, System.Convert.ToUInt64 value)
+                    | DFloat(b) -> LFloat(b, System.Convert.ToDouble value)
+                    | DBool -> LBool(unbox value)
+                    | DChar -> LChar(unbox value)
+                    | DString -> LString (unbox value)
+                    | DUnit -> LUnit
+                    | DArray t ->
+                        let arr = value |> unbox<System.Collections.IEnumerable>
+                        let values =
+                            [
+                                let e = arr.GetEnumerator()
+                                while e.MoveNext() do
+                                    yield ofTypedValue ctx t e.Current
+                            ]
+                        LArray(t, values)
+                    | DType -> LType(unbox value)
+
+                    | DFunction _ | DObject _ | DRecord _ | DUnion _ | DTuple _->
+                        failwithf "%A cannot be a literal" t
+        
+    type AttributeValue =
+        {
+            atype : TypeId
+            aargs : list<Literal>
+        }
+
+
+
            
     type Context =
         {
@@ -224,6 +294,8 @@ module rec Translate =
                 | None ->
                     let ass = t.Assembly.GetName().Name
 
+                    let! att = t.GetCustomAttributesData() |> Seq.toList |> List.mapS (AttributeValue.ofAttributeS)
+
                     match t with
                     | Generic(ns, name, cnt) ->
                         let! targs = t.GetGenericArguments() |> Array.toList |> List.mapS TranslationState.getTypeId
@@ -233,6 +305,8 @@ module rec Translate =
                                 enamespace = ns
                                 ename = name
                                 egeneric = targs
+                                eismodule = false
+                                eattributes = att
                             }
 
                         do! TranslationState.setTypeInfo tid info
@@ -245,9 +319,31 @@ module rec Translate =
                                 enamespace = ns
                                 ename = name
                                 egeneric = []
+                                eismodule = FSharpType.IsModule t
+                                eattributes = att
                             }
                         do! TranslationState.setTypeInfo tid info
                         return info
+            }
+
+    module AttributeValue =
+        let ofAttributeS (a : System.Reflection.CustomAttributeData) =
+            state {
+                let! t = TranslationState.getTypeId a.AttributeType
+                
+                let! args = 
+                    a.ConstructorArguments |> Seq.toList |> List.mapS (fun a ->
+                        state {
+                            let! tid = TranslationState.getTypeId a.ArgumentType
+                            let! t = TypeDef.ofTypeS a.ArgumentType
+                            let! s = State.get
+                            let v = Literal.ofTypedValue s.context tid a.Value
+                            return v
+                        }
+                    )
+
+                return { atype = t; aargs = args }
+
             }
 
     module TypeDef =
@@ -282,60 +378,63 @@ module rec Translate =
                 | Some def ->
                     return Some def
                 | None -> 
+                    printfn "translate %A" t
                     match tryOfSimpleType t with
                     |  Some def ->
                         let! info = TypeInfo.ofTypeS t 
                         
-                        printfn "simple: %A" def
                         do! TranslationState.setTypeDef tid def
                         return Some def
                     | None ->
-                        let! info = TypeInfo.ofTypeS t 
-                        if FSharpType.IsRecord(t, true) then
-                            let! fields = 
-                                FSharpType.GetRecordFields(t, true)
-                                |> Array.toList
-                                |> List.mapS (fun p ->
-                                    state {
-                                        let! t = TranslationState.getTypeId p.PropertyType
-                                        return (p.Name, t)
-                                    }
-                                )
-                            
-                            let def = DRecord(info, fields)
+                        if t.IsArray then
+                            let! inner = TranslationState.getTypeId (t.GetElementType())
+                            let def = DArray inner
                             do! TranslationState.setTypeDef tid def
                             return Some def
+                        elif t.IsEnum then
+                            let arr = System.Enum.GetValues(t)
+                            let def = 
+                        else 
+                            let! info = TypeInfo.ofTypeS t 
+                            if FSharpType.IsRecord(t, true) then
+                                let! fields = 
+                                    FSharpType.GetRecordFields(t, true)
+                                    |> Array.toList
+                                    |> List.mapS (fun p ->
+                                        state {
+                                            let! t = TranslationState.getTypeId p.PropertyType
+                                            return (p.Name, t)
+                                        }
+                                    )
+                            
+                                let def = DRecord(info, fields)
+                                do! TranslationState.setTypeDef tid def
+                                return Some def
 
-                        elif FSharpType.IsUnion(t, true) then
-                            let! cases =
-                                FSharpType.GetUnionCases(t, true) |> Array.toList |> List.mapS (fun c ->
-                                    state {
-                                        let! fields = 
-                                            c.GetFields() 
-                                            |> Array.toList
-                                            |> List.mapS (fun p ->
-                                                state {
-                                                    let! t = TranslationState.getTypeId p.PropertyType
-                                                    return (p.Name, t)
-                                                }
-                                            )
+                            elif FSharpType.IsUnion(t, true) then
+                                let! cases =
+                                    FSharpType.GetUnionCases(t, true) |> Array.toList |> List.mapS (fun c ->
+                                        state {
+                                            let! fields = 
+                                                c.GetFields() 
+                                                |> Array.toList
+                                                |> List.mapS (fun p ->
+                                                    state {
+                                                        let! t = TranslationState.getTypeId p.PropertyType
+                                                        return (p.Name, t)
+                                                    }
+                                                )
 
-                                        return { uname = c.Name; ufields = fields }
-                                    }
-                                )
+                                            return { uname = c.Name; ufields = fields }
+                                        }
+                                    )
                             
                         
-                            let def = DUnion(info, cases)
-                            do! TranslationState.setTypeDef tid def
-                            return Some def
+                                let def = DUnion(info, cases)
+                                do! TranslationState.setTypeDef tid def
+                                return Some def
 
-                        else   
-                            let isReflectable = 
-                                t.GetMembers(BindingFlags.NonPublic ||| BindingFlags.Public ||| BindingFlags.CreateInstance ||| BindingFlags.Instance ||| BindingFlags.Static)
-                                |> Seq.tryPick (function (:? MethodBase as m) -> Microsoft.FSharp.Quotations.Expr.TryGetReflectedDefinition m | _ -> None)
-                                |> Option.isSome
-                            
-                            if isReflectable then
+                            else   
                                 let! fields = 
                                     t.GetFields(BindingFlags.NonPublic ||| BindingFlags.Public ||| BindingFlags.Instance)
                                     |> Array.toList
@@ -349,13 +448,10 @@ module rec Translate =
                                 let def = DObject(info, fields)
                                 do! TranslationState.setTypeDef tid def
                                 return Some def
-                            else
-
-                                return None
                                 
             }
             
-        let ofTypeS (t : Type) =
+        let ofTypeS (t : Type) : State<TranslationState, TypeDef> =
             state {
                 match! tryOfTypeS t with
                     | Some d -> return d

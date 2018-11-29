@@ -75,62 +75,71 @@ module Normal =
                 1.0
         else
             1.0 - cdf -v
-            
 
-
+type RansacResult<'d, 't, 's> = 
+    { 
+        data            : 'd[]
+        test            : 't[]
+        value           : 's
+        modelIndices    : int[]
+        inliers         : int[]
+        iterations      : int
+        time            : MicroTime 
+    }
+    member x.model = x.modelIndices |> Array.map (Array.get x.data)
 type Gasac =
     
-    static member solve<'a, 'b, 't>(p : float, 
-                                    w : float, 
-                                    needed : int, 
-                                    construct :  'a[] -> list<'b>, 
-                                    countInliers : 'b -> 't[] -> int,  
-                                    getInliers : 'b -> 't[] -> int[], 
-                                    train : 'a[], 
-                                    test : 't[] 
-                                    ) : Option<_> =
+    static member solve<'a, 'b, 't>
+            (
+            p : float, 
+            w : float, 
+            needed : int, 
+            construct :  'a[] -> list<'b>, 
+            countInliers : 'b -> 't[] -> int,  
+            getInliers : 'b -> 't[] -> int[], 
+            train : 'a[], 
+            test : 't[] 
+            ) : Option<_> =
+        
+        let sw = System.Diagnostics.Stopwatch.StartNew()
+        Log.startTimed "Gasac"
+
+        let populationLimit = 200
         
         let n = train.Length
-
-        let expectedFitness = w * float train.Length
-
         let rand = RandomSystem()
-        let populationLimit = 50
-        
-        let mutationProb = 0.2222
-
         let population = List<Specimen>(populationLimit+1)
         let cmp = Func<_,_,_>(fun l r -> compare l.fitness r.fitness)
-
-        let testBest(v : float) =
-            let inline sq a = a * a
-            let sum = population |> Seq.sumBy (fun s -> s.fitness)
-            let avg = sum / float population.Count
-            let var = 
-                let t = population |> Seq.sumBy (fun s -> sq (s.fitness - avg))
-                t / float (population.Count - 1)
-                
-            // x ~ N(avg, sqrt var)
-            // (x - avg) / sqrt var ~ N(0,1)
-            let x = (v - avg) / sqrt var
-
-            let greatness = 1.0 - Normal.cdf x
-            
-            if greatness > expectedFitness then
-                true
-            else
-                false
-                
-
-
-        let mutable bestFitness = Double.NegativeInfinity
-        let mutable secondBestFitness = Double.NegativeInfinity
         
+        let mutationProb = 1.0/(2.0 * float needed)
+
+        //let expectedFitness = w * float train.Length
+        //let fitnessIsExpected(f : float) =
+        //    let inline sq a = a * a
+        //    let sum = population |> Seq.sumBy (fun s -> s.fitness)
+        //    let avg = sum / float population.Count
+        //    let var = 
+        //        let t = population |> Seq.sumBy (fun s -> sq (s.fitness - avg))
+        //        t / float (population.Count - 1)
+                
+        //    // x ~ N(avg, sqrt var)
+        //    // (x - avg) / sqrt var ~ N(0,1)
+        //    let x = (f - avg) / sqrt var
+
+        //    let greatness = 1.0 - Normal.cdf x
+            
+        //    printfn "great %f vs fit %f" greatness expectedFitness
+
+        //    if greatness > expectedFitness then
+        //        true
+        //    else
+        //        false
+                
         let enqueue a =
-            if a.fitness > bestFitness then secondBestFitness <- bestFitness; bestFitness <- a.fitness
-            population.HeapEnqueue(cmp,a)
-            if population.Count > populationLimit then
-                population.HeapDequeue(cmp) |> ignore
+            if not (population.Contains a) then
+                population.HeapEnqueue(cmp,a)
+                if population.Count > populationLimit then
+                    population.HeapDequeue(cmp) |> ignore
                 
         let hasDuplicates a =
             let rec hasDuplicates (i : int) (j : int) (a : array<_>) =  
@@ -207,20 +216,136 @@ type Gasac =
             else
                 None
                  
-        let iter = 100
-
         let chooseRandomSpecimen() =
             population.[rand.UniformInt(population.Count)]
 
-        for i in 0..iter-1 do   
-            let p1 = chooseRandomSpecimen()
-            let p2 = chooseRandomSpecimen()
+        let generation () = 
+            for _ in 0..populationLimit/2-1 do
+                let p1 = chooseRandomSpecimen()
+                let p2 = chooseRandomSpecimen()
         
-            let cs = combine p1 p2 |> List.choose mutate
+                combine p1 p2 
+                |> List.choose mutate
+                |> List.iter enqueue
 
-            for c in cs do
-                enqueue c
 
+        let best() =
+            let icmp = Func<_,_,_>(fun l r -> compare r.fitness l.fitness)
+            let best = population.HeapDequeue(icmp)
+            population.HeapEnqueue(cmp,best)
+            best
+
+        let cycles R =
+
+            let eps = 1.0 - (best().fitness / float n)
+            printfn "eps %f" eps
+            let norm = 1.0 - pow (1.0 - eps) (float needed)
+            printfn "norm %A" norm
+            let p = 1.0 - pow norm R
+            printfn "p %A" p
+            let newr = log (1.0 - p) / log norm
+            printfn "newr %A" newr
+            newr
+
+        let mutable R = cycles 1000.0
+        let mutable i = 0.0
+        while i < R do  
+            Log.line "Generation %d: %d remaining - best=%f" (int i) (int R) (best().fitness)
+            generation()
+            i <- i + 1.0
+            R <- cycles R
+            
+        let best = best()
         
+        let bestInl = 
+            best.genome
+            |> Array.map ( Array.get train ) 
+            |> construct
+            |> List.map ( fun b -> getInliers b test )
+            |> List.maxBy Seq.length
 
-        None
+        let bestSol =
+            best.genome
+            |> Array.map ( Array.get train ) 
+            |> construct
+            |> List.maxBy ( fun b -> countInliers b test |> float)
+        
+        Log.stop()
+        let res = {
+            data = train
+            test = test
+            value = bestSol
+            modelIndices = best.genome
+            inliers = bestInl
+            iterations = int i
+            time = sw.MicroTime
+        }
+
+        Some res
+
+module Gasac =
+
+    let solve p w needed construct countInliers getInliers train test =
+        Gasac.solve(p,1.0-w,needed,construct,countInliers,getInliers,train,test)
+
+module Test =
+    
+    let test() =
+        let rand = RandomSystem()
+        let v2r() = rand.UniformV2d(Box2d(V2d.NN,V2d.II))
+        let ray = 
+            let p = v2r()
+            let d = rand.UniformV2dDirection()
+            Ray2d(p,d)
+
+        let origplane = 
+            let p = ray.Origin
+            let n = V2d(ray.Direction.Y, -ray.Direction.X)
+            Plane2d(n,p)
+
+        let pts = 
+            let r = 
+                Array.init 500 ( fun _ -> v2r())
+            let l = 
+                Array.init 50 (fun _ -> 
+                    let t = rand.UniformDouble() * 2.0 - 1.0
+                    let p = ray.GetPointOnRay(t)
+                    let off = rand.UniformDouble() * 0.05
+                    let norm = V2d(ray.Direction.Y, -ray.Direction.X)
+                    p + norm * off
+                )
+            Array.concat [l;r]
+
+        let construct(pts : V2d[]) =
+            let p0 = pts.[0]
+            let p1 = pts.[1]
+            let dir = (p1 - p0).Normalized
+            let n = V2d(dir.Y, -dir.X)
+            [Plane2d(n,p0)]
+
+        let inliers (ps : Plane2d) (pts : array<V2d>) =
+            let plane = ps
+            pts |> Array.mapi (fun i p -> 
+                    let c = plane.GetClosestPointOn p
+                    let d = (p-c).Length
+                    i,d
+                )
+                |> Array.choose(fun (i,d) ->
+                    if d < 0.01 then Some i
+                    else None
+                )
+
+        let countInliers ps pts = inliers ps pts |> Seq.length
+
+        match Gasac.solve 0.999 0.4 2 construct countInliers inliers pts pts with
+        | None -> ()
+        | Some result ->
+            let best = result.value
+
+            Log.line "GASAC: %d iterations, time:%A" result.iterations result.time
+            Log.line "input: %A" origplane
+            Log.line "resul: %A" best
+            Log.line "finished"
+
+
+Test.test();;

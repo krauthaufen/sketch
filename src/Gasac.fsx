@@ -4,11 +4,19 @@ open System
 open System.Collections.Generic
 open Aardvark.Base
 
-type Specimen =
+[<CustomEquality; NoComparison>]
+type Specimen<'a> =
     {
         genome : array<int>
         fitness : float
-    } 
+        solution : 'a
+    } with 
+        override x.Equals o =
+            match o with
+            | :? Specimen<'a> as o -> x.genome = o.genome
+            | _ -> false
+        override x.GetHashCode() =
+            x.genome.GetHashCode()
 
 //module Normal =
 //    let private table =
@@ -109,7 +117,7 @@ type Gasac =
         
         let n = train.Length
         let rand = RandomSystem()
-        let population = List<Specimen>(populationLimit+1)
+        let population = List<Specimen<_>>(populationLimit+1)
         let cmp = Func<_,_,_>(fun l r -> compare l.fitness r.fitness)
         
         let mutationProb = 1.0/(2.0 * float needed)
@@ -139,25 +147,33 @@ type Gasac =
             hasDuplicates 0 1 a
 
                 
-        let getFitness (genome : array<int>) = 
+        let birthSpecimen (genome : array<int>) = 
             if hasDuplicates genome then
-                0.0
+                None
             else
-                genome 
-                    |> Array.map ( Array.get train ) 
-                    |> construct
-                    |> List.map ( fun b -> countInliers b test |> float )
-                    |> List.max
-                        
+                let res =
+                    genome 
+                        |> Array.map ( Array.get train ) 
+                        |> construct
+                        |> List.map ( fun b -> b,countInliers b test |> float )
+
+                match res with
+                | [] -> None
+                | res -> 
+                    let (sol,fit) = res |> List.maxBy snd
+                    Some {
+                        genome = genome
+                        fitness = fit
+                        solution = sol
+                    }
+            
+
         let newSpecimen() = 
             let gen = Array.init needed (fun _ -> rand.UniformInt(n))
             if hasDuplicates gen then   
                 None
             else
-                {
-                    genome = gen
-                    fitness = getFitness gen 
-                } |> Some
+                birthSpecimen gen
 
         Seq.initInfinite ( fun _ -> newSpecimen() ) 
             |> Seq.choose id 
@@ -165,7 +181,7 @@ type Gasac =
             |> Seq.take populationLimit 
             |> Seq.iter enqueue
 
-        let combine (l : Specimen) (r : Specimen) =
+        let combine (l : Specimen<_>) (r : Specimen<_>) =
             let a = Array.zeroCreate needed
             let b = Array.zeroCreate needed
             for i in 0..needed-1 do 
@@ -178,43 +194,30 @@ type Gasac =
                     a.[i] <- rg
                     b.[i] <- lg
 
-            let child1 = { genome = a; fitness = getFitness a}
-            let child2 = { genome = b; fitness = getFitness b}
-            match child1.fitness > 0.0, child2.fitness > 0.0 with
-                | true, true    -> [child1; child2]
-                | true, _       -> [child1]
-                | _, true       -> [child2]
-                | _             -> []
-
-
-        let mutate (s : Specimen) =
+            let child1 = birthSpecimen a
+            let child2 = birthSpecimen b
+            [child1; child2] |> List.choose id
+            
+        let mutate (s : Specimen<_>) =
             let mutated = s.genome
             for i in 0..needed-1 do
                 if rand.UniformDouble() < mutationProb then
                     mutated.[i] <- rand.UniformInt(n)
 
-            let fitness = getFitness mutated
-            if fitness > 0.0 then
-                Some {
-                    genome = mutated
-                    fitness = fitness
-                }
-            else
-                None
+            birthSpecimen mutated
                  
         let chooseRandomSpecimen() =
             population.[rand.UniformInt(population.Count)]
 
         let generation () = 
-            for _ in 0..populationLimit/2-1 do
+            for _ in 0..populationLimit-1 do
                 let p1 = chooseRandomSpecimen()
                 let p2 = chooseRandomSpecimen()
         
                 combine p1 p2 
                 |> List.choose mutate
                 |> List.iter enqueue
-
-
+                
         let best() =
             population |> Seq.maxBy (fun s -> s.fitness)
 
@@ -223,13 +226,7 @@ type Gasac =
                 population 
                 |> Seq.sortByDescending ( fun s -> s.fitness )
                 |> Seq.take n
-                |> Seq.map ( fun s -> 
-                    s.genome
-                        |> Array.map ( Array.get train ) 
-                        |> construct 
-                        |> Seq.map(fun b -> countInliers b test |> float)
-                        |> Seq.max
-                )
+                |> Seq.map ( fun s -> s.fitness )
 
             let inline sq a = a * a
             let sum = fitnesses |> Seq.sum
@@ -243,6 +240,19 @@ type Gasac =
         let mutable lastvar = -9999.0
         let mutable ct = 0
         let superfit() =
+            //let best = best()
+            //let il = getInliers best.solution test
+            //let ilmax = countInliers best.solution test
+            //let test = il |> Array.map (Array.get test)
+            //let res =
+            //    population |> Seq.map ( fun (s : Specimen<'b>) -> float (countInliers s.solution test) / float ilmax ) 
+
+            //let min = Seq.min res
+
+            //Log.line "min:%f max:%f" (min) (Seq.max res)
+            
+            //min >= 1.25
+            
 
             let (realavg,realvar) = populationfitness 5
             let avgdiff = sq(realavg - lastavg)
@@ -261,7 +271,7 @@ type Gasac =
                 else
                     Log.line "(%d) good" ct
 
-                if ct >= 20 then
+                if ct >= 50 then
                     true
                 else
                     false
@@ -269,14 +279,12 @@ type Gasac =
                 ct <- 0
                 Log.line "Fitness: avg=%f var=%f avgdiff=%f vardiff=%f" realavg realvar avgdiff vardiff
                 false
-
-
-            
-        let mutable i = 0.0
-        while not (superfit()) do  
+                
+        let mutable i = 0
+        while not (superfit()) do //&& i < 200 do  
             Log.line "Generation %d: best=%f" (int i) (best().fitness)
             generation()
-            i <- i + 1.0
+            i <- i + 1
             
         let best = best()
         
@@ -334,16 +342,16 @@ module Test =
             [|p1; p2|]
             
         let evil = 
-            Array.init 500 ( fun _ -> v2r() + V2d(2.0,2.0))
+            Array.init 5000 ( fun _ -> v2r() + V2d(2.0,2.0))
 
         let pts = 
             let r = 
-                Array.init 500 ( fun _ -> v2r())
+                Array.init 5000 ( fun _ -> v2r())
             let l = 
-                Array.init 100 (fun _ -> 
+                Array.init 1000 (fun _ -> 
                     let t = rand.UniformDouble() * 2.0 - 1.0
                     let p = ray.GetPointOnRay(t)
-                    let off = rand.UniformDouble() * 0.01
+                    let off = rand.UniformDouble() * 0.25
                     let norm = V2d(ray.Direction.Y, -ray.Direction.X)
                     p + norm * off
                 )
@@ -371,8 +379,8 @@ module Test =
         let countInliers ((p0,p1,ps) : V2d * V2d * Plane2d) (pts : array<V2d>) = 
             let il = inliers ps pts |> Seq.length
             match superpts |> Seq.contains p0, superpts |> Seq.contains p1 with
-            | true, true -> 1000 + il
-            | false, true | true, false -> 500 + il
+            | true, true -> 5000 + il
+            | false, true | true, false -> 2500 + il
             | _ -> il
 
         let getInliers ((p0,p1,ps) : V2d * V2d * Plane2d) pts = inliers ps pts

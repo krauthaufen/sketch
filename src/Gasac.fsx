@@ -218,11 +218,11 @@ type Gasac =
         let best() =
             population |> Seq.maxBy (fun s -> s.fitness)
 
-        let realfitness() =
+        let populationfitness n =
             let fitnesses =
                 population 
                 |> Seq.sortByDescending ( fun s -> s.fitness )
-                |> Seq.take (populationLimit/8)
+                |> Seq.take n
                 |> Seq.map ( fun s -> 
                     s.genome
                         |> Array.map ( Array.get train ) 
@@ -239,29 +239,41 @@ type Gasac =
                 t / float ((fitnesses |> Seq.length) - 1)
             avg,var
 
-        let mutable last = -9999.0
+        let mutable lastavg = -9999.0
+        let mutable lastvar = -9999.0
+        let mutable ct = 0
         let superfit() =
-            //let (realavg,realvar) = realfitness()
-            //let diff = sq(realavg - last)
-            
-            //let best = best()
-            //let diff = sq(last - best.fitness)
-            //last <- best.fitness
 
-            //let isFit = diff <= best.fitness * (1.0 - p)
-            //let difftest = (realavg * (1.0-p))
-            //let vartest = realavg * w
-            //Log.line "Fitness: avg=%f var=%f(%f) diff=%f(%f)" realavg realvar vartest diff difftest
+            let (realavg,realvar) = populationfitness 5
+            let avgdiff = sq(realavg - lastavg)
+            lastavg <- realavg
+            let vardiff = sq(realvar - lastvar)
+            lastvar <- realvar
             
-            //diff <= difftest && realvar <= vartest
+            let isFit = avgdiff <= 1E-12
+            let allFit = vardiff <= 1E-12
             
-            //isFit
-            false
+            
+            if isFit && allFit then
+                ct <- ct + 1
+                if ct = 1 then
+                    Log.line "(%d) good: Fitness: avg=%f var=%f avgdiff=%f vardiff=%f" ct realavg realvar avgdiff vardiff
+                else
+                    Log.line "(%d) good" ct
+
+                if ct >= 20 then
+                    true
+                else
+                    false
+            else
+                ct <- 0
+                Log.line "Fitness: avg=%f var=%f avgdiff=%f vardiff=%f" realavg realvar avgdiff vardiff
+                false
 
 
             
         let mutable i = 0.0
-        while i < 100.0 do //not (superfit())do  
+        while not (superfit()) do  
             Log.line "Generation %d: best=%f" (int i) (best().fitness)
             generation()
             i <- i + 1.0
@@ -331,7 +343,7 @@ module Test =
                 Array.init 100 (fun _ -> 
                     let t = rand.UniformDouble() * 2.0 - 1.0
                     let p = ray.GetPointOnRay(t)
-                    let off = rand.UniformDouble() * 0.25
+                    let off = rand.UniformDouble() * 0.01
                     let norm = V2d(ray.Direction.Y, -ray.Direction.X)
                     p + norm * off
                 )

@@ -9,7 +9,7 @@ type Specimen<'a> =
     {
         genome : array<int>
         fitness : float
-        solution : 'a
+        solution : list<'a>
     } with 
         override x.Equals o =
             match o with
@@ -115,7 +115,9 @@ type Gasac =
                 match res with
                 | [] -> None
                 | res -> 
-                    let (sol,fit) = res |> List.maxBy snd
+                    let fit = res |> List.map snd |> List.min
+                    let sol = res |> List.map fst
+
                     Some {
                         genome = genome
                         fitness = fit
@@ -130,9 +132,10 @@ type Gasac =
                 birthSpecimen gen
 
         let combine (l : Specimen<_>) (r : Specimen<_>) =
-            let a = Array.zeroCreate needed
-            let b = Array.zeroCreate needed
-            for i in 0..needed-1 do 
+            let n = min l.genome.Length r.genome.Length
+            let a = Array.zeroCreate n
+            let b = Array.zeroCreate n
+            for i in 0..n-1 do 
                 let lg = l.genome.[i]
                 let rg = r.genome.[i]
                 if rand.UniformInt() &&& 1 = 0 then
@@ -147,10 +150,12 @@ type Gasac =
             [child1; child2] |> List.choose id
             
         let mutate (s : Specimen<_>) =
-            let mutated = s.genome
-            for i in 0..needed-1 do
-                if rand.UniformDouble() < mutationProb then
-                    mutated.[i] <- (getRandomTrainIndices 1 |> Seq.head)
+            let mutable mutated = s.genome.Copy()
+            while not (hasDuplicates mutated) do
+                mutated <- s.genome.Copy()
+                for i in 0..mutated.Length-1 do
+                    if rand.UniformDouble() < mutationProb then
+                        mutated.[i] <- (getRandomTrainIndices 1 |> Seq.head)
 
             birthSpecimen mutated
                  
@@ -176,7 +181,7 @@ type Gasac =
             |> Seq.iter enqueue
 
         let mutable i = 0
-        while i < 200 do  
+        while i < 20 do  
             Log.line "Generation %d: best=%f" (int i) (best().fitness)
             generation()
             i <- i + 1
@@ -277,11 +282,14 @@ module Test =
             )
 
         let construct(pts : V2d[]) =
-            let p0 = pts.[0]
-            let p1 = pts.[1]
-            let dir = (p1 - p0).Normalized
-            let n = V2d(dir.Y, -dir.X)
-            [(p0,p1,Plane2d(n,p0))]
+            let ct = pts.Length / 2
+            List.init ct ( fun i -> 
+                let p0 = pts.[2*i] 
+                let p1 = pts.[2*i+1]
+                let dir = (p1 - p0).Normalized
+                let n = V2d(dir.Y, -dir.X) 
+                (p0,p1,Plane2d(n,p0))
+            )
 
         let inliers (ps : Plane2d) (pts : array<V2d>) =
             let plane = ps
@@ -298,13 +306,15 @@ module Test =
         let countInliers ((p0,p1,ps) : V2d * V2d * Plane2d) (pts : array<V2d>) = 
             let il = inliers ps pts |> Seq.length
             match superpts |> Seq.contains p0, superpts |> Seq.contains p1 with
-            | true, true -> 5000 + il
-            | false, true | true, false -> 2500 + il
+            | true, true -> 20 + il
+            | false, true | true, false -> 10 + il
             | _ -> il
 
         let getInliers ((p0,p1,ps) : V2d * V2d * Plane2d) pts = inliers ps pts
 
         let getRandom (n : int) =
+            let ct = Utils.rand.UniformInt(5)+1
+            let n = ct * n
             Utils.getRandomIndices n probs |> Seq.toArray
 
         match Gasac.solve 0.999 0.05 2 construct countInliers getInliers getRandom pts pts with

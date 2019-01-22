@@ -96,6 +96,24 @@ type RansacResult<'d, 't, 's> =
     }
     member x.model = x.modelIndices |> Array.map (Array.get x.data)
 let inline sq a = a * a
+
+
+module Utils = 
+    let rand = RandomSystem()
+    let getRandomIndex (probs : array<float>) =
+        let pick = rand.UniformDouble() * (probs |> Array.sum)
+
+        let mutable cdf = 0.0
+        let mutable found = false
+        let mutable i = 0
+        while not found do
+            cdf <- cdf + probs.[i]
+            if pick <= cdf then
+                found <- true
+            else            
+                i <- i+1        
+        i
+
 type Gasac =
     
     static member solve<'a, 'b, 't>
@@ -106,6 +124,7 @@ type Gasac =
             construct :  'a[] -> list<'b>, 
             countInliers : 'b -> 't[] -> int,  
             getInliers : 'b -> 't[] -> int[], 
+            getRandomTrainIndex : unit -> int,
             train : 'a[], 
             test : 't[] 
             ) : Option<_> =
@@ -115,20 +134,12 @@ type Gasac =
 
         let populationLimit = 200
         
-        let n = train.Length
         let rand = RandomSystem()
         let population = List<Specimen<_>>(populationLimit+1)
         let cmp = Func<_,_,_>(fun l r -> compare l.fitness r.fitness)
         
         let mutationProb = 1.0/(2.0 * float needed)
 
-        let expectedFitness = w * float train.Length
-        
-        //    // x ~ N(avg, sqrt var)
-        //    // (x - avg) / sqrt var ~ N(0,1)
-        //    let x = (f - avg) / sqrt var
-        //    1.0 - Normal.cdf x
-                
         let enqueue a =
             if not (population.Contains a) then
                 population.HeapEnqueue(cmp,a)
@@ -146,7 +157,6 @@ type Gasac =
                     else hasDuplicates i (j + 1) a
             hasDuplicates 0 1 a
 
-                
         let birthSpecimen (genome : array<int>) = 
             if hasDuplicates genome then
                 None
@@ -167,19 +177,12 @@ type Gasac =
                         solution = sol
                     }
             
-
         let newSpecimen() = 
-            let gen = Array.init needed (fun _ -> rand.UniformInt(n))
+            let gen = Array.init needed (fun _ -> getRandomTrainIndex())
             if hasDuplicates gen then   
                 None
             else
                 birthSpecimen gen
-
-        Seq.initInfinite ( fun _ -> newSpecimen() ) 
-            |> Seq.choose id 
-            |> Seq.distinct 
-            |> Seq.take populationLimit 
-            |> Seq.iter enqueue
 
         let combine (l : Specimen<_>) (r : Specimen<_>) =
             let a = Array.zeroCreate needed
@@ -202,7 +205,7 @@ type Gasac =
             let mutated = s.genome
             for i in 0..needed-1 do
                 if rand.UniformDouble() < mutationProb then
-                    mutated.[i] <- rand.UniformInt(n)
+                    mutated.[i] <- getRandomTrainIndex()
 
             birthSpecimen mutated
                  
@@ -221,71 +224,18 @@ type Gasac =
         let best() =
             population |> Seq.maxBy (fun s -> s.fitness)
 
-        let populationfitness n =
-            let fitnesses =
-                population 
-                |> Seq.sortByDescending ( fun s -> s.fitness )
-                |> Seq.take n
-                |> Seq.map ( fun s -> s.fitness )
+        Seq.initInfinite ( fun _ -> newSpecimen() ) 
+            |> Seq.choose id 
+            |> Seq.distinct 
+            |> Seq.take populationLimit 
+            |> Seq.iter enqueue
 
-            let inline sq a = a * a
-            let sum = fitnesses |> Seq.sum
-            let avg = sum / float (fitnesses |> Seq.length)
-            let var = 
-                let t = fitnesses |> Seq.sumBy (fun s -> sq (s - avg))
-                t / float ((fitnesses |> Seq.length) - 1)
-            avg,var
-
-        let mutable lastavg = -9999.0
-        let mutable lastvar = -9999.0
-        let mutable ct = 0
-        let superfit() =
-            //let best = best()
-            //let il = getInliers best.solution test
-            //let ilmax = countInliers best.solution test
-            //let test = il |> Array.map (Array.get test)
-            //let res =
-            //    population |> Seq.map ( fun (s : Specimen<'b>) -> float (countInliers s.solution test) / float ilmax ) 
-
-            //let min = Seq.min res
-
-            //Log.line "min:%f max:%f" (min) (Seq.max res)
-            
-            //min >= 1.25
-            
-
-            let (realavg,realvar) = populationfitness 5
-            let avgdiff = sq(realavg - lastavg)
-            lastavg <- realavg
-            let vardiff = sq(realvar - lastvar)
-            lastvar <- realvar
-            
-            let isFit = avgdiff <= 1E-12
-            let allFit = vardiff <= 1E-12
-            
-            
-            if isFit && allFit then
-                ct <- ct + 1
-                if ct = 1 then
-                    Log.line "(%d) good: Fitness: avg=%f var=%f avgdiff=%f vardiff=%f" ct realavg realvar avgdiff vardiff
-                else
-                    Log.line "(%d) good" ct
-
-                if ct >= 50 then
-                    true
-                else
-                    false
-            else
-                ct <- 0
-                Log.line "Fitness: avg=%f var=%f avgdiff=%f vardiff=%f" realavg realvar avgdiff vardiff
-                false
-                
         let mutable i = 0
-        while not (superfit()) do //&& i < 200 do  
+        while i < 200 do  
             Log.line "Generation %d: best=%f" (int i) (best().fitness)
             generation()
             i <- i + 1
-            
+
         let best = best()
         
         let bestInl = 
@@ -317,11 +267,28 @@ type Gasac =
 
 module Gasac =
 
-    let solve p w needed construct countInliers getInliers train test =
-        Gasac.solve(p,w,needed,construct,countInliers,getInliers,train,test)
+    let solve p w needed construct countInliers getInliers getRandom train test =
+        Gasac.solve(p,w,needed,construct,countInliers,getInliers,getRandom,train,test)
+
 
 module Test =
     
+    let rnd() =
+        let xs = [|0;1;2;3;4|]
+        let ps = [|100.0;1.0;1.0;1.0;1.0|]
+
+        let cts = Array.zeroCreate xs.Length
+        let ct = 100000
+        for i in 0..ct-1 do
+            let el = Utils.getRandomIndex ps
+            cts.[el] <- cts.[el] + 1
+
+        let cts = cts |> Array.map (fun e -> float e / float ct)
+        printfn "probs: "
+        for i in 0..cts.Length-1 do
+            printfn " %d: %f" i cts.[i]
+
+
     let test() =
         let rand = RandomSystem()
         let v2r() = rand.UniformV2d(Box2d(V2d.NN,V2d.II))
@@ -355,7 +322,15 @@ module Test =
                     let norm = V2d(ray.Direction.Y, -ray.Direction.X)
                     p + norm * off
                 )
-            Array.concat [l;r;superpts;evil]
+            Array.concat [l;r;evil;superpts]
+
+        let probs =
+            Array.init pts.Length (fun i -> 
+                if i >= pts.Length-2 then
+                    100.0
+                else
+                    1.0                
+            )
 
         let construct(pts : V2d[]) =
             let p0 = pts.[0]
@@ -385,7 +360,10 @@ module Test =
 
         let getInliers ((p0,p1,ps) : V2d * V2d * Plane2d) pts = inliers ps pts
 
-        match Gasac.solve 0.999999999 0.05 2 construct countInliers getInliers pts pts with
+        let getRandom () =
+            Utils.getRandomIndex probs
+
+        match Gasac.solve 0.999 0.05 2 construct countInliers getInliers getRandom pts pts with
         | None -> ()
         | Some result ->
             let (_,_,best) = result.value

@@ -148,16 +148,34 @@ type Gasac =
             let child1 = birthSpecimen a
             let child2 = birthSpecimen b
             [child1; child2] |> List.choose id
-            
-        let mutate (s : Specimen<_>) =
-            let mutable mutated = s.genome.Copy()
-            while not (hasDuplicates mutated) do
-                mutated <- s.genome.Copy()
-                for i in 0..mutated.Length-1 do
-                    if rand.UniformDouble() < mutationProb then
-                        mutated.[i] <- (getRandomTrainIndices 1 |> Seq.head)
 
-            birthSpecimen mutated
+        let mutateGenome (g : array<int>) =
+            let original = g.Length
+            let mutable mutated = g.Copy()
+            if rand.UniformDouble() < mutationProb then
+                let ct = rand.UniformInt 3
+                if rand.UniformDouble() < 0.5 then
+                    let newSize = max 1 (mutated.Length - ct)
+                    Array.Resize(&mutated, newSize)
+                else
+                    let newSize = min 5 (mutated.Length + ct)
+                    Array.Resize(&mutated, newSize)
+                    let newIdx = 
+                        Seq.initInfinite ( fun _ -> getRandomTrainIndices ct)
+                            |> Seq.filter (fun idx -> not (idx |> Array.exists (fun i -> mutated |> Array.contains i)))
+                            |> Seq.head
+                    for j in 0..newIdx.Length-1 do
+                        mutated.[original + j] <- newIdx.[j]
+            let mutable changed = mutated.Copy()
+            while not (hasDuplicates changed) do
+                changed <- mutated.Copy()                                    
+                for i in 0..changed.Length-1 do
+                    if rand.UniformDouble() < mutationProb then
+                        changed.[i] <- (getRandomTrainIndices 1 |> Seq.head)
+            changed
+
+        let mutate (s : Specimen<_>) =
+            birthSpecimen (mutateGenome s.genome)
                  
         let chooseRandomSpecimen() =
             population.[rand.UniformInt(population.Count)]

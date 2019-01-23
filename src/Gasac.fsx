@@ -59,6 +59,56 @@ module Utils =
 
     let getRandomIndex = getRandomIndices 1 >> Seq.head
 
+    let hasDuplicates a =
+        let rec hasDuplicates (i : int) (j : int) (a : array<_>) =  
+            if i >= a.Length then
+                false
+            elif j >= a.Length then
+                hasDuplicates (i + 1) (i + 2) a
+            else
+                if a.[i] = a.[j] then true
+                else hasDuplicates i (j + 1) a
+        hasDuplicates 0 1 a
+
+module GasacProcs =
+    let mutateGenome (g : array<int>) (needed : int) (minLength : int) (maxLength : int) (randIdx : int -> int[]) (mutationProb : float)=
+        let ol = g.Length
+        let mutable g = g |> Array.copy
+
+        let newLength = 
+            if Utils.rand.UniformDouble() < 0.5 then
+                Seq.initInfinite ( fun _ -> minLength + Utils.rand.UniformInt(maxLength + 1 - minLength))
+                    |> Seq.filter (fun d -> d%needed = 0)
+                    |> Seq.head
+            else
+                ol                
+
+        let g = 
+            Array.Resize(&g, newLength)  
+            if newLength > ol then
+                Seq.initInfinite (fun _ -> 
+                    let g = g |> Array.copy
+                    let diff = newLength - ol
+                    let newIdx = randIdx diff
+                    for j in 0..diff-1 do
+                        g.[ol+j] <- newIdx.[j]
+                    g
+                ) |> Seq.filter (fun arr -> not (Utils.hasDuplicates arr))                                      
+                  |> Seq.head
+            else
+                g              
+
+        Seq.initInfinite ( fun _ -> 
+            let g = g |> Array.copy
+            let ni = randIdx ol
+            for j in 0 .. ol-1 do
+                if Utils.rand.UniformDouble() < mutationProb then
+                    g.[j] <- ni.[j]
+            g 
+        ) |> Seq.filter ( fun arr -> not (Utils.hasDuplicates arr)) 
+          |> Seq.head
+
+
 type Gasac =
     
     static member solve<'a, 'b, 't>
@@ -79,6 +129,9 @@ type Gasac =
 
         let populationLimit = 200
         
+        let minModelCount = 1
+        let maxModelCount = 4
+
         let rand = RandomSystem()
         let population = List<Specimen<_>>(populationLimit+1)
         let cmp = Func<_,_,_>(fun l r -> compare l.fitness r.fitness)
@@ -91,26 +144,20 @@ type Gasac =
                 if population.Count > populationLimit then
                     population.HeapDequeue(cmp) |> ignore
                 
-        let hasDuplicates a =
-            let rec hasDuplicates (i : int) (j : int) (a : array<_>) =  
-                if i >= a.Length then
-                    false
-                elif j >= a.Length then
-                    hasDuplicates (i + 1) (i + 2) a
-                else
-                    if a.[i] = a.[j] then true
-                    else hasDuplicates i (j + 1) a
-            hasDuplicates 0 1 a
 
         let birthSpecimen (genome : array<int>) = 
-            if hasDuplicates genome then
+            if Utils.hasDuplicates genome then
                 None
             else
                 let res =
                     genome 
                         |> Array.map ( Array.get train ) 
                         |> construct
-                        |> List.map ( fun b -> b,countInliers b test |> float )
+                        |> failwith ""
+
+
+
+
 
                 match res with
                 | [] -> None
@@ -126,7 +173,7 @@ type Gasac =
             
         let newSpecimen() = 
             let gen = getRandomTrainIndices 4
-            if hasDuplicates gen then   
+            if Utils.hasDuplicates gen then   
                 None
             else
                 birthSpecimen gen
@@ -149,33 +196,9 @@ type Gasac =
             let child2 = birthSpecimen b
             [child1; child2] |> List.choose id
 
-        let mutateGenome (g : array<int>) =
-            let original = g.Length
-            let mutable mutated = g.Copy()
-            if rand.UniformDouble() < mutationProb then
-                let ct = rand.UniformInt 3
-                if rand.UniformDouble() < 0.5 then
-                    let newSize = max 1 (mutated.Length - ct)
-                    Array.Resize(&mutated, newSize)
-                else
-                    let newSize = min 5 (mutated.Length + ct)
-                    Array.Resize(&mutated, newSize)
-                    let newIdx = 
-                        Seq.initInfinite ( fun _ -> getRandomTrainIndices ct)
-                            |> Seq.filter (fun idx -> not (idx |> Array.exists (fun i -> mutated |> Array.contains i)))
-                            |> Seq.head
-                    for j in 0..newIdx.Length-1 do
-                        mutated.[original + j] <- newIdx.[j]
-            let mutable changed = mutated.Copy()
-            while not (hasDuplicates changed) do
-                changed <- mutated.Copy()                                    
-                for i in 0..changed.Length-1 do
-                    if rand.UniformDouble() < mutationProb then
-                        changed.[i] <- (getRandomTrainIndices 1 |> Seq.head)
-            changed
-
         let mutate (s : Specimen<_>) =
-            birthSpecimen (mutateGenome s.genome)
+            let ng = GasacProcs.mutateGenome s.genome needed (needed * minModelCount) (needed * maxModelCount) getRandomTrainIndices mutationProb
+            birthSpecimen ng
                  
         let chooseRandomSpecimen() =
             population.[rand.UniformInt(population.Count)]
@@ -238,9 +261,98 @@ module Gasac =
     let solve p w needed construct countInliers getInliers getRandom train test =
         Gasac.solve(p,w,needed,construct,countInliers,getInliers,getRandom,train,test)
 
+    let calcScore (models : 'b[]) (test : 't[]) (modelDistance : 't -> 'b -> float) (t : float) =
+        if models.Length = 0 then
+            System.Double.NegativeInfinity
+        elif models.Length = 1 then
+            failwith ""
+        else
+            let ils =
+                models |> Array.collect (fun m -> 
+                    test |> Array.filter (fun p -> modelDistance p m < t)
+                ) |> Array.distinct
+
+            //let ils = test
+
+            if ils.Length = 0 then
+                System.Double.NegativeInfinity
+            else            
+                let ss =
+                    ils |> Seq.sumBy ( fun il -> 
+                        let distances = models |> Array.map ( fun m -> modelDistance il m ) |> Array.sort
+                        let a = distances.[0]
+                        let b = distances.[1]
+
+                        (b - a) /// t
+                    )
+
+                ss / float ils.Length
+
 
 module Test =
     
+    let score threshold =
+        let rand = RandomSystem()
+        let v2r() = rand.UniformV2d(Box2d(V2d.NN,V2d.II))
+
+        let rayToPlane (ray : Ray2d) =
+            let p = ray.Origin
+            let n = V2d(ray.Direction.Y, -ray.Direction.X)
+            Plane2d(n,p)
+
+        let rays = 
+            [|
+                Ray2d(V2d(0.0,0.0), V2d.OI)
+                Ray2d(V2d(2.0,0.0), V2d.OI)
+                Ray2d(V2d(4.0,0.0), V2d.OI)
+            |] 
+
+        let ps =
+            rays |> Array.map ( fun ray -> 
+                Array.init 100 ( fun _ -> 
+                    let t = rand.UniformDouble() * 2.0 - 1.0
+                    let p = ray.GetPointOnRay(t)
+                    let off = rand.UniformDouble() * 0.05
+                    let norm = V2d(ray.Direction.Y, -ray.Direction.X)
+                    p + norm * off
+                )                
+            ) |> Array.concat
+
+        let modelDistance (p : V2d) (ray : Ray2d) =
+            let plane = rayToPlane ray
+            let c = plane.GetClosestPointOn p
+            (p-c).Length
+
+        // let bad = 
+        //     [|
+        //         Ray2d(V2d(0.0,0.0), V2d(0.0, 1.0).Normalized)
+        //         Ray2d(V2d(2.0,0.0), V2d(0.0, 1.0).Normalized)
+        //     |]
+
+        let gscore = Gasac.calcScore rays ps modelDistance threshold
+        //let bscore = Gasac.calcScore bad ps modelDistance threshold
+
+        printfn "good: %A" gscore
+        //printfn "bad: %A" bscore
+
+        
+
+
+
+    let mut() =
+        let xs = [|0;1;2;3|]
+
+        let cts = Array.zeroCreate 10
+
+        let getRandom n =
+            let ps = Array.init 100 (fun _ -> 1.0)
+            Utils.getRandomIndices n ps |> Seq.toArray
+
+        let g = GasacProcs.mutateGenome xs 2 4 8 getRandom 0.5
+
+        printfn "%A" g
+        
+
     let rnd() =
         let ps = Array.append [|100.0|] (Array.replicate 100 1.0)
 
@@ -299,8 +411,10 @@ module Test =
                     1.0                
             )
 
+        let needed = 2
+
         let construct(pts : V2d[]) =
-            let ct = pts.Length / 2
+            let ct = pts.Length / needed
             List.init ct ( fun i -> 
                 let p0 = pts.[2*i] 
                 let p1 = pts.[2*i+1]
@@ -330,12 +444,9 @@ module Test =
 
         let getInliers ((p0,p1,ps) : V2d * V2d * Plane2d) pts = inliers ps pts
 
-        let getRandom (n : int) =
-            let ct = Utils.rand.UniformInt(5)+1
-            let n = ct * n
-            Utils.getRandomIndices n probs |> Seq.toArray
+        let getRandom (n : int) = Utils.getRandomIndices n probs |> Seq.toArray
 
-        match Gasac.solve 0.999 0.05 2 construct countInliers getInliers getRandom pts pts with
+        match Gasac.solve 0.999 0.05 needed construct countInliers getInliers getRandom pts pts with
         | None -> ()
         | Some result ->
             let (_,_,best) = result.value
@@ -347,4 +458,4 @@ module Test =
             Log.line "finished"
 
 
-Test.test();;
+Test.score 0.1;;

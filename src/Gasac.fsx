@@ -107,19 +107,51 @@ module GasacProcs =
             g 
         ) |> Seq.filter ( fun arr -> not (Utils.hasDuplicates arr)) 
           |> Seq.head
+          
+    let calcScore (models : 'b[]) (test : 't[]) (modelDistance : 't -> 'b -> float) (t : float) =
+        if models.Length = 0 then
+            System.Double.NegativeInfinity
+        else
+            let ils =
+                models |> Array.collect (fun m -> 
+                    test |> Array.filter (fun p -> modelDistance p m < t)
+                ) |> Array.distinct
+                
+            if ils.Length = 0 then
+                System.Double.NegativeInfinity
+            else   
+                let ss = 
+                    if models.Length = 1 then
+                        let model = models.[0]
+                        ils |> Seq.sumBy ( fun il -> 
+                            let d = modelDistance il model
+                            d / t
+                        )
+                    else
+                        ils |> Seq.sumBy ( fun il -> 
+                            let distances = models |> Array.map ( fun m -> modelDistance il m ) |> Array.sort
+                            let a = distances.[0]
+                            let b = distances.[1]
 
+                            (b - a) / t
+                        )
+                ss / float ils.Length
 
 type Gasac =
     
-    static member solve<'a, 'b, 't>
+    static member solve<'a, 'b, 't when 't : equality>
             (
             p : float, 
             w : float, 
+            minModelCount : int,
+            maxModelCount : int,
             needed : int, 
             construct :  'a[] -> list<'b>, 
             countInliers : 'b -> 't[] -> int,  
             getInliers : 'b -> 't[] -> int[], 
             getRandomTrainIndices : int -> int[],
+            getDistance : 'b -> 't -> float,
+            threshold : float,
             train : 'a[], 
             test : 't[] 
             ) : Option<_> =
@@ -129,9 +161,6 @@ type Gasac =
 
         let populationLimit = 200
         
-        let minModelCount = 1
-        let maxModelCount = 4
-
         let rand = RandomSystem()
         let population = List<Specimen<_>>(populationLimit+1)
         let cmp = Func<_,_,_>(fun l r -> compare l.fitness r.fitness)
@@ -149,30 +178,24 @@ type Gasac =
             if Utils.hasDuplicates genome then
                 None
             else
-                let res =
+                let models =
                     genome 
                         |> Array.map ( Array.get train ) 
                         |> construct
-                        |> failwith ""
+                        
+                let score =
+                    models |> Seq.sumBy (fun p -> countInliers p test |> float)
+                    //GasacProcs.calcScore (models |> List.toArray) test (flip getDistance) threshold 
 
-
-
-
-
-                match res with
-                | [] -> None
-                | res -> 
-                    let fit = res |> List.map snd |> List.min
-                    let sol = res |> List.map fst
-
-                    Some {
-                        genome = genome
-                        fitness = fit
-                        solution = sol
-                    }
+                Some {
+                    genome = genome
+                    fitness = score
+                    solution = models
+                }
             
         let newSpecimen() = 
-            let gen = getRandomTrainIndices 4
+            let len = (minModelCount + (rand.UniformInt(maxModelCount - minModelCount))) * needed
+            let gen = getRandomTrainIndices len
             if Utils.hasDuplicates gen then   
                 None
             else
@@ -213,7 +236,16 @@ type Gasac =
                 |> List.iter enqueue
                 
         let best() =
-            population |> Seq.maxBy (fun s -> s.fitness)
+            population 
+                |> Seq.sortByDescending (fun s -> s.fitness)
+                |> Seq.take (max 1 (population.Count / 5))
+                |> Seq.map (fun s -> 
+                    let models = construct (s.genome |> Array.map (Array.get train))
+                    s,models, GasacProcs.calcScore (models |> List.toArray) test (flip getDistance) threshold, s.fitness
+                    )
+                |> Seq.sortByDescending (fun (_,_,b,_) -> b)
+                |> Seq.head
+                |> fun (s,_,_,_) -> s
 
         Seq.initInfinite ( fun _ -> newSpecimen() ) 
             |> Seq.choose id 
@@ -233,14 +265,14 @@ type Gasac =
             best.genome
             |> Array.map ( Array.get train ) 
             |> construct
-            |> List.map ( fun b -> getInliers b test )
-            |> List.maxBy Seq.length
+            |> List.map ( fun b -> getInliers b test |> Array.toList )
+            |> List.concat
+            |> List.toArray
 
         let bestSol =
             best.genome
             |> Array.map ( Array.get train ) 
             |> construct
-            |> List.maxBy ( fun b -> countInliers b test |> float)
         
         Log.stop()
         sw.Stop()
@@ -258,35 +290,9 @@ type Gasac =
 
 module Gasac =
 
-    let solve p w needed construct countInliers getInliers getRandom train test =
-        Gasac.solve(p,w,needed,construct,countInliers,getInliers,getRandom,train,test)
+    let solve p w mi ma needed construct countInliers getInliers getRandom dist thresh train test =
+        Gasac.solve(p,w,mi,ma,needed,construct,countInliers,getInliers,getRandom,dist,thresh,train,test)
 
-    let calcScore (models : 'b[]) (test : 't[]) (modelDistance : 't -> 'b -> float) (t : float) =
-        if models.Length = 0 then
-            System.Double.NegativeInfinity
-        elif models.Length = 1 then
-            failwith ""
-        else
-            let ils =
-                models |> Array.collect (fun m -> 
-                    test |> Array.filter (fun p -> modelDistance p m < t)
-                ) |> Array.distinct
-
-            //let ils = test
-
-            if ils.Length = 0 then
-                System.Double.NegativeInfinity
-            else            
-                let ss =
-                    ils |> Seq.sumBy ( fun il -> 
-                        let distances = models |> Array.map ( fun m -> modelDistance il m ) |> Array.sort
-                        let a = distances.[0]
-                        let b = distances.[1]
-
-                        (b - a) /// t
-                    )
-
-                ss / float ils.Length
 
 
 module Test =
@@ -296,48 +302,71 @@ module Test =
         let v2r() = rand.UniformV2d(Box2d(V2d.NN,V2d.II))
 
         let rayToPlane (ray : Ray2d) =
-            let p = ray.Origin
+            let p = V2d(ray.Origin.Y, -ray.Origin.X) 
             let n = V2d(ray.Direction.Y, -ray.Direction.X)
             Plane2d(n,p)
 
-        let rays = 
+        let good = 
             [|
                 Ray2d(V2d(0.0,0.0), V2d.OI)
-                Ray2d(V2d(2.0,0.0), V2d.OI)
-                Ray2d(V2d(4.0,0.0), V2d.OI)
             |] 
 
         let ps =
-            rays |> Array.map ( fun ray -> 
-                Array.init 100 ( fun _ -> 
+            good |> Array.map ( fun ray -> 
+                Array.init 25 ( fun _ -> 
                     let t = rand.UniformDouble() * 2.0 - 1.0
                     let p = ray.GetPointOnRay(t)
-                    let off = rand.UniformDouble() * 0.05
+                    let off = rand.UniformDouble() * 0.25
                     let norm = V2d(ray.Direction.Y, -ray.Direction.X)
                     p + norm * off
                 )                
             ) |> Array.concat
-
+            
         let modelDistance (p : V2d) (ray : Ray2d) =
             let plane = rayToPlane ray
             let c = plane.GetClosestPointOn p
             (p-c).Length
 
-        // let bad = 
-        //     [|
-        //         Ray2d(V2d(0.0,0.0), V2d(0.0, 1.0).Normalized)
-        //         Ray2d(V2d(2.0,0.0), V2d(0.0, 1.0).Normalized)
-        //     |]
+        let ils (ps : V2d[]) (rays : Ray2d[]) =
+            rays 
+            |> Array.map ( fun ray -> 
+                ps |> Array.map ( fun p -> modelDistance p ray ) 
+            )
+            |> fun p -> Log.line "%A" (p |> Array.concat); p
+            |> Array.sumBy ( fun rs -> rs |> Array.sumBy (fun f -> if f < threshold then 1.0 else 0.0) )
 
-        let gscore = Gasac.calcScore rays ps modelDistance threshold
-        //let bscore = Gasac.calcScore bad ps modelDistance threshold
+            
+        let bad1 =
+            [|
+                Ray2d(V2d(0.1,0.0), V2d.OI)
+                Ray2d(V2d(0.0,0.0), V2d.OI)
+            |] 
 
-        printfn "good: %A" gscore
-        //printfn "bad: %A" bscore
+        let bad2 =
+            [|
+                Ray2d(V2d(2.0,0.0), V2d.OI)
+                Ray2d(V2d(2.1,0.0), V2d.OI)
+            |] 
+            
+        let bad3 =
+            [|
+                Ray2d(V2d(0.25,0.0), V2d.OI)
+            |] 
 
+        let gil = ils ps good 
+        //let b1il = ils ps bad1 
+        //let b2il = ils ps bad2
+        let b3il = ils ps bad3 
+
+        let gscore  = GasacProcs.calcScore good ps modelDistance threshold
+        //let b1score = GasacProcs.calcScore bad1 ps modelDistance threshold
+        //let b2score = GasacProcs.calcScore bad2 ps modelDistance threshold
+        let b3score = GasacProcs.calcScore bad3 ps modelDistance threshold
         
-
-
+        printfn "good: %f %A" gil  gscore
+        //printfn "bad1: %d %A" b1il b1score
+        //printfn "bad2: %d %A" b2il b2score
+        printfn "bad3: %f %A" b3il b3score
 
     let mut() =
         let xs = [|0;1;2;3|]
@@ -351,7 +380,6 @@ module Test =
         let g = GasacProcs.mutateGenome xs 2 4 8 getRandom 0.5
 
         printfn "%A" g
-        
 
     let rnd() =
         let ps = Array.append [|100.0|] (Array.replicate 100 1.0)
@@ -368,48 +396,56 @@ module Test =
         for i in 0..cts.Length-1 do
             printfn " %d: %f" i cts.[i]
 
-
     let test() =
         let rand = RandomSystem()
-        let v2r() = rand.UniformV2d(Box2d(V2d.NN,V2d.II))
-        let ray = 
-            let p = v2r()
-            let d = rand.UniformV2dDirection()
-            Ray2d(p,d)
+        let mutable pts = Array.zeroCreate 0
+        let mutable superpts = Array.zeroCreate 0
+        let mutable probs = Array.zeroCreate 0
+        let mutable origplanes = Array.zeroCreate 0
 
-        let origplane = 
-            let p = ray.Origin
-            let n = V2d(ray.Direction.Y, -ray.Direction.X)
-            Plane2d(n,p)
-            
-
-
-        let superpts = 
-            let t = rand.UniformDouble() + 0.25
-            let p1 = ray.GetPointOnRay(t)
-            let p2 = ray.GetPointOnRay(-t)
-            [|p1; p2|]
-            
-        let pts = 
-            let r = 
-                Array.init 5000 ( fun _ -> v2r())
-            let l = 
-                Array.init 1000 (fun _ -> 
-                    let t = rand.UniformDouble() * 2.0 - 1.0
-                    let p = ray.GetPointOnRay(t)
-                    let off = rand.UniformDouble() * 0.25
-                    let norm = V2d(ray.Direction.Y, -ray.Direction.X)
-                    p + norm * off
+        let addRayWithNoise xoffset =
+            let v2r() = rand.UniformV2d(Box2d(V2d.NN,V2d.II)) + (V2d(xoffset,0.0))
+            let ray = 
+                let p = v2r()
+                let d = V2d.OI //rand.UniformV2dDirection()
+                Ray2d(p,d)
+            let uorigplane = 
+                let p = ray.Origin
+                let n = V2d(ray.Direction.Y, -ray.Direction.X)
+                Plane2d(n,p)
+            let usuperpts = 
+                let t = rand.UniformDouble() + 0.25
+                let p1 = ray.GetPointOnRay(t)
+                let p2 = ray.GetPointOnRay(-t)
+                [|p1; p2|]
+            let upts = 
+                let r = 
+                    Array.init 500 ( fun _ -> v2r())
+                let l = 
+                    Array.init 500 (fun _ -> 
+                        let t = rand.UniformDouble() * 2.0 - 1.0
+                        let p = ray.GetPointOnRay(t)
+                        let off = rand.UniformDouble() * 0.25
+                        let norm = V2d(ray.Direction.Y, -ray.Direction.X)
+                        p + norm * off
+                    )
+                Array.concat [usuperpts;l;r]
+            let uprobs =
+                Array.init upts.Length (fun i -> 
+                    if i < usuperpts.Length then
+                        10.0
+                    else
+                        1.0                
                 )
-            Array.concat [superpts;l;r]
+            pts <- Array.append pts upts
+            superpts <- Array.append superpts usuperpts 
+            probs <- Array.append probs uprobs 
+            origplanes <- Array.append origplanes [|uorigplane|]
 
-        let probs =
-            Array.init pts.Length (fun i -> 
-                if i < superpts.Length then
-                    10.0
-                else
-                    1.0                
-            )
+        let numModels = 2
+        
+        for i in 0..numModels-1 do
+            addRayWithNoise (3.0 * float i)
 
         let needed = 2
 
@@ -423,15 +459,21 @@ module Test =
                 (p0,p1,Plane2d(n,p0))
             )
 
-        let inliers (ps : Plane2d) (pts : array<V2d>) =
-            let plane = ps
+        let getModelDistance (plane : Plane2d) (p : V2d) =
+            let c = plane.GetClosestPointOn p
+            (p-c).Length
+        
+        let getDistance ((p0,p1,ps) : V2d * V2d * Plane2d) (p : V2d) =
+            getModelDistance ps p
+
+        let threshold = 0.25
+        let inliers (plane : Plane2d) (pts : array<V2d>) =
             pts |> Array.mapi (fun i p -> 
-                    let c = plane.GetClosestPointOn p
-                    let d = (p-c).Length
+                    let d = getModelDistance plane p
                     i,d
                 )
                 |> Array.choose(fun (i,d) ->
-                    if d < 0.01 then Some i
+                    if d < threshold then Some i
                     else None
                 )
 
@@ -446,16 +488,20 @@ module Test =
 
         let getRandom (n : int) = Utils.getRandomIndices n probs |> Seq.toArray
 
-        match Gasac.solve 0.999 0.05 needed construct countInliers getInliers getRandom pts pts with
+        match Gasac.solve 0.999 0.05 numModels numModels needed construct countInliers getInliers getRandom getDistance threshold pts pts with
         | None -> ()
         | Some result ->
-            let (_,_,best) = result.value
+            let pls = result.value |> List.map ( fun (_,_,p) -> p )
 
             Log.line "GASAC: %d iterations, time:%A" result.iterations result.time
-            Log.line "input: %A" origplane
-            Log.line "resul: %A" best
+            Log.line "input:"
+            for p in origplanes do
+                Log.line "%A (%A)" p.Normal p.Distance
+            Log.line "resul:"
+            for p in pls do
+                Log.line "%A (%A)" p.Normal p.Distance
             Log.line "inliers: %A" result.inliers.Length
             Log.line "finished"
 
-
-Test.score 0.1;;
+Test.score 0.2;;
+//Test.test();;

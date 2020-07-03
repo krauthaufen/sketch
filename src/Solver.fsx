@@ -250,38 +250,76 @@ type Solver =
 
             x
 
-let printMatrix (m : Matrix<'a>) =
-    let names = Array.init (int (max m.SX m.SY)) string
+[<AbstractClass; Sealed; Extension>]
+type MatrixExtensions private ()=
+
+    static let rx = System.Text.RegularExpressions.Regex @"^(-)?0\.[0]+((E|e)-?[0]+)$"
+
+    static let printMatrix (print : 'a -> string) (m : IMatrix<'a>) =
+        let names = Array.init (int (max m.Dim.X m.Dim.Y)) string
    
-    let mutable entries = Matrix<string>(m.Size)
-    entries.Info.ForeachXYIndex(m.Info, fun (x : int64) (y : int64) (i : int64) (mi : int64) ->
-        entries.[i] <- sprintf "%A" m.[mi]
-    ) |> ignore
+        let mutable entries = Matrix<string>(m.Dim)
+        entries.SetByCoord (fun (v : V2l) ->
+            print m.[v]
+        ) |> ignore
 
-    let longestName = names |> Seq.map String.length |> Seq.max
-    let longestEntry = entries.Data |> Seq.map String.length |> Seq.max
+        let longestName = names |> Seq.map String.length |> Seq.max
+        let longestEntry = entries.Data |> Seq.map String.length |> Seq.max
 
-    let width = max longestEntry longestName
-    let inline padl (str : string) =
-        if str.Length < width then 
-            let m = (width - str.Length)
-            str + System.String(' ', m)
-        else
-            str
+        let width = max longestEntry longestName
+        let inline padl (str : string) =
+            if str.Length < width then 
+                let m = (width - str.Length)
+                str + System.String(' ', m)
+            else
+                str
 
-    let names = names |> Array.map padl
-    let entries = entries.Map padl
+        let entries = entries.Map padl
+        for r in 0 .. int m.Dim.Y - 1 do
+            let row = entries.GetRow(r)
+            let data = Seq.init (int row.S) (fun i -> row.[i]) |> String.concat " "
+            Log.line "%s" data
 
-    let ws = padl ""
-    let minuses = System.String('-', width)
-    let header = names |> Array.take (int m.SX) |> String.concat " | " |> sprintf "| %s | %s |" ws
-    let sep = Seq.init (int m.SX) (fun _ -> sprintf ":%s " minuses) |> String.concat "|"
-    Log.line "%s" header
-    Log.line "| %s:|%s|" minuses sep
-    for r in 0 .. int m.SY - 1 do
-        let row = entries.GetRow(r)
-        let data = Seq.init (int row.S) (fun i -> row.[i]) |> String.concat " | "
-        Log.line "| %s | %s |" names.[r] data
+    [<Extension>]
+    static member Print(this : IMatrix<'a>) =
+        printMatrix (sprintf "%A") this
+     
+    [<Extension>]
+    static member Print(this : IVector<'a>) =
+        let m = Matrix<'a>(V2l(1L, this.Dim))
+        m.SetByCoord(fun (v : V2l) -> this.[v.Y]).Print()
+
+    [<Extension>]
+    static member Print(this : IMatrix<float>, fmt : string) =   
+        this |> printMatrix (fun a -> a.ToString fmt)
+        
+    [<Extension>]
+    static member Print(this : IVector<float>, fmt : string) =
+        let m = Matrix<float>(V2l(1L, this.Dim))
+        m.SetByCoord(fun (v : V2l) -> this.[v.Y]).Print(fmt)
+       
+    [<Extension>]
+    static member Print(this : IMatrix<complex>, fmt : string) =  
+    
+        let printComplex (c : complex) =
+            let real = c.Real.ToString(fmt)
+            let imag = c.Imag.ToString(fmt)
+
+            let rz = rx.IsMatch real
+            let iz = rx.IsMatch imag
+
+            if rz && iz then real
+            elif rz && not iz then sprintf "%si" imag
+            elif iz && not rz then real
+            else sprintf "%s + %si" real imag
+
+
+        this |> printMatrix printComplex
+        
+    [<Extension>]
+    static member Print(this : IVector<ComplexD>, fmt : string) =
+        let m = Matrix<ComplexD>(V2l(1L, this.Dim))
+        m.SetByCoord(fun (v : V2l) -> this.[v.Y]).Print(fmt)
 
 let test() =
     let m =
@@ -300,23 +338,24 @@ let test() =
         Vector([|1.0; 2.0; 3.0; 4.0; 5.0|])
 
 
-    let known = Map.ofList [1, 2.0, 7, 10.0; -1, 3.0]
+    let known = Map.ofList [1, 2.0]
 
 
     let x = m.Solve(b, known)
 
     Log.start "A"
-    printMatrix m
+    m.Print()
     Log.stop()
 
         
     Log.start "x"
-    printMatrix (Matrix(x.Data, 1L, x.Size))
+    x.Print()
     Log.stop()
 
         
     Log.start "b"
-    printMatrix (Matrix(b.Data, 1L, b.Size))
+    b.Print()
     Log.stop()
+
 
 test()

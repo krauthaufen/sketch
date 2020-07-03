@@ -144,36 +144,36 @@ type Solver =
 
         Vector.Create result
 
-    /// solves `a*x = b` with some known `xi`. Note that for over-determined systems this will
+    /// solves `mat*x = vec` with some known `xi`. Note that for over-determined systems this will
     /// return a least-squares solution.
     [<Extension>]
-    static member Solve (a : Matrix<ComplexD>, b : Vector<ComplexD>, ?known : Map<int, ComplexD>) =
-        let known = defaultArg known Map.empty
+    static member Solve (mat : Matrix<ComplexD>, vec : Vector<ComplexD>, ?known : Map<int, ComplexD>) =
+        let known = defaultArg known Map.empty |> Map.filter (fun i _ -> i >= 0 && i < int mat.SX)
         if Map.isEmpty known then
-            if a.SX = a.SY then
-                let a = a.Copy()
+            if mat.SX = mat.SY then
+                let a = mat.Copy()
                 let perm = a.LuFactorize()
-                a.LuSolve(perm, b)
+                a.LuSolve(perm, vec)
             else
-                let a1 = a.Transposed.Multiply(a)
-                let b1 = a.Transposed.Multiply(b)
+                let a1 = mat.Transposed.Multiply(mat)
+                let b1 = mat.Transposed.Multiply(vec)
                 let perm = a1.LuFactorize()
                 a1.LuSolve(perm, b1)
         else
-            let unknown = Seq.init (int a.SX) id |> Seq.filter (fun i -> not (Map.containsKey i known)) |> Seq.toArray
+            let unknown = Seq.init (int mat.SX) id |> Seq.filter (fun i -> not (Map.containsKey i known)) |> Seq.toArray
 
-            let res = Matrix<ComplexD>(unknown.LongLength, a.SY)
-            let mutable bb = Vector<ComplexD>(a.SY)
+            let res = Matrix<ComplexD>(unknown.LongLength, mat.SY)
+            let mutable bb = Vector<ComplexD>(mat.SY)
 
-            for ri in 0 .. int a.SY - 1 do
-                let mutable mRow = a.GetRow(ri)
+            for ri in 0 .. int mat.SY - 1 do
+                let mutable mRow = mat.GetRow(ri)
                 let mutable resRow = res.GetRow(ri)
                 let mutable i = 0
                 for ci in unknown do
                     resRow.[i] <- mRow.[ci]
                     i <- i + 1
             
-                let mutable rhs = b.[ri]
+                let mutable rhs = vec.[ri]
                 for KeyValue(id, value) in known do
                     rhs <- rhs - value * mRow.[id]
 
@@ -186,7 +186,7 @@ type Solver =
             let perm = a1.LuFactorize()
             let xx = a1.LuSolve(perm, b1)
 
-            let mutable x = Vector<ComplexD>(int a.SX)
+            let mutable x = Vector<ComplexD>(int mat.SX)
             for KeyValue(i, v) in known do
                 x.[i] <- v
 
@@ -197,36 +197,36 @@ type Solver =
 
             x
 
-    /// solves `a*x = b` with some known `xi`. Note that for over-determined systems this will
+    /// solves `mat*x = vec` with some known `xi`. Note that for over-determined systems this will
     /// return a least-squares solution.
     [<Extension>]
-    static member Solve (a : Matrix<float>, b : Vector<float>, ?known : Map<int, float>) =
-        let known = defaultArg known Map.empty
+    static member Solve (mat : Matrix<float>, vec : Vector<float>, ?known : Map<int, float>) =
+        let known = defaultArg known Map.empty |> Map.filter (fun i _ -> i >= 0 && i < int mat.SX)
         if Map.isEmpty known then
-            if a.SX = a.SY then
-                let a = a.Copy()
+            if mat.SX = mat.SY then
+                let a = mat.Copy()
                 let perm = a.LuFactorize()
-                a.LuSolve(perm, b)
+                a.LuSolve(perm, vec)
             else
-                let a1 = a.Transposed.Multiply(a)
-                let b1 = a.Transposed.Multiply(b)
+                let a1 = mat.Transposed.Multiply(mat)
+                let b1 = mat.Transposed.Multiply(vec)
                 let perm = a1.LuFactorize()
                 a1.LuSolve(perm, b1)
         else
-            let unknown = Seq.init (int a.SX) id |> Seq.filter (fun i -> not (Map.containsKey i known)) |> Seq.toArray
+            let unknown = Seq.init (int mat.SX) id |> Seq.filter (fun i -> not (Map.containsKey i known)) |> Seq.toArray
 
-            let res = Matrix<float>(unknown.LongLength, a.SY)
-            let mutable bb = Vector<float>(a.SY)
+            let res = Matrix<float>(unknown.LongLength, mat.SY)
+            let mutable bb = Vector<float>(mat.SY)
 
-            for ri in 0 .. int a.SY - 1 do
-                let mutable mRow = a.GetRow(ri)
+            for ri in 0 .. int mat.SY - 1 do
+                let mutable mRow = mat.GetRow(ri)
                 let mutable resRow = res.GetRow(ri)
                 let mutable i = 0
                 for ci in unknown do
                     resRow.[i] <- mRow.[ci]
                     i <- i + 1
             
-                let mutable rhs = b.[ri]
+                let mutable rhs = vec.[ri]
                 for KeyValue(id, value) in known do
                     rhs <- rhs - value * mRow.[id]
 
@@ -239,7 +239,7 @@ type Solver =
             let perm = a1.LuFactorize()
             let xx = a1.LuSolve(perm, b1)
 
-            let mutable x = Vector<float>(int a.SX)
+            let mutable x = Vector<float>(int mat.SX)
             for KeyValue(i, v) in known do
                 x.[i] <- v
 
@@ -300,7 +300,7 @@ let test() =
         Vector([|1.0; 2.0; 3.0; 4.0; 5.0|])
 
 
-    let known = Map.ofList [1, 2.0]
+    let known = Map.ofList [1, 2.0, 7, 10.0; -1, 3.0]
 
 
     let x = m.Solve(b, known)

@@ -9,6 +9,50 @@
 open Aardvark.Base
 open System.Runtime.CompilerServices
 
+#nowarn "1337"
+#nowarn "77"
+
+
+type Complex = ComplexD
+type Complex32 = ComplexF
+type complex = Complex
+type complex32 = Complex32
+
+
+[<AutoOpen>]
+module ComplexOperators =
+
+    [<CompilerMessage("internal", 1337, IsHidden = true)>]
+    type ComplexConverter =
+        static member op_Explicit (a : int8) = ComplexD (float a)
+        static member op_Explicit (a : uint8) = ComplexD (float a)
+        static member op_Explicit (a : int16) = ComplexD (float a)
+        static member op_Explicit (a : uint16) = ComplexD (float a)
+        static member op_Explicit (a : int) = ComplexD (float a)
+        static member op_Explicit (a : uint32) = ComplexD (float a)
+        static member op_Explicit (a : int64) = ComplexD (float a)
+        static member op_Explicit (a : uint64) = ComplexD (float a)
+        static member op_Explicit (a : float32) = ComplexD (float a)
+        static member op_Explicit (a : ComplexF) = ComplexD(float a.Real, float a.Imag)
+        
+        static member op_Explicit (a : int8) = ComplexF (float32 a)
+        static member op_Explicit (a : uint8) = ComplexF (float32 a)
+        static member op_Explicit (a : int16) = ComplexF (float32 a)
+        static member op_Explicit (a : uint16) = ComplexF (float32 a)
+        static member op_Explicit (a : int) = ComplexF (float32 a)
+        static member op_Explicit (a : uint32) = ComplexF (float32 a)
+        static member op_Explicit (a : int64) = ComplexF (float32 a)
+        static member op_Explicit (a : uint64) = ComplexF (float32 a)
+        static member op_Explicit (a : float) = ComplexF (float32 a)
+        static member op_Explicit (a : ComplexD) = ComplexF(float32 a.Real, float32 a.Imag)
+
+
+    let inline private complexAux (a : ^a) (b : ^b) : ^c =  
+        ((^a or ^b or ^c) : (static member op_Explicit : ^b -> ^c) (b))
+
+    let inline complex a : complex = complexAux Unchecked.defaultof<ComplexConverter> a
+    let inline complex32 a : complex32 = complexAux Unchecked.defaultof<ComplexConverter> a
+
 [<AbstractClass; Sealed; Extension>]
 type Solver =
     
@@ -66,7 +110,7 @@ type Solver =
 
     [<Extension>]
     static member Multiply(mat : Matrix<ComplexD>, vec : Vector<ComplexD>) =
-        if mat.SX <> vec.Size then raise <| System.ArgumentException("m0.SX != m1.SY")
+        if mat.SX <> vec.Size then raise <| System.ArgumentException("mat.SX != vec.Size")
 
         let result = Array.zeroCreate (int mat.Dim.Y)
 
@@ -206,78 +250,73 @@ type Solver =
 
             x
 
-module SolverTest = 
-    let printMatrix (m : Matrix<'a>) =
-        let names = Array.init (int (max m.SX m.SY)) string
+let printMatrix (m : Matrix<'a>) =
+    let names = Array.init (int (max m.SX m.SY)) string
    
-        let mutable entries = Matrix<string>(m.Size)
-        entries.Info.ForeachXYIndex(m.Info, fun (x : int64) (y : int64) (i : int64) (mi : int64) ->
-            entries.[i] <- sprintf "%A" m.[mi]
-        ) |> ignore
+    let mutable entries = Matrix<string>(m.Size)
+    entries.Info.ForeachXYIndex(m.Info, fun (x : int64) (y : int64) (i : int64) (mi : int64) ->
+        entries.[i] <- sprintf "%A" m.[mi]
+    ) |> ignore
 
-        let longestName = names |> Seq.map String.length |> Seq.max
-        let longestEntry = entries.Data |> Seq.map String.length |> Seq.max
+    let longestName = names |> Seq.map String.length |> Seq.max
+    let longestEntry = entries.Data |> Seq.map String.length |> Seq.max
 
-        let width = max longestEntry longestName
-        let inline padl (str : string) =
-            if str.Length < width then 
-                let m = (width - str.Length)
-                str + System.String(' ', m)
-            else
-                str
+    let width = max longestEntry longestName
+    let inline padl (str : string) =
+        if str.Length < width then 
+            let m = (width - str.Length)
+            str + System.String(' ', m)
+        else
+            str
 
-        let names = names |> Array.map padl
-        let entries = entries.Map padl
+    let names = names |> Array.map padl
+    let entries = entries.Map padl
 
-        let ws = padl ""
-        let minuses = System.String('-', width)
-        let header = names |> Array.take (int m.SX) |> String.concat " | " |> sprintf "| %s | %s |" ws
-        let sep = Seq.init (int m.SX) (fun _ -> sprintf ":%s " minuses) |> String.concat "|"
-        Log.line "%s" header
-        Log.line "| %s:|%s|" minuses sep
-        for r in 0 .. int m.SY - 1 do
-            let row = entries.GetRow(r)
-            let data = Seq.init (int row.S) (fun i -> row.[i]) |> String.concat " | "
-            Log.line "| %s | %s |" names.[r] data
+    let ws = padl ""
+    let minuses = System.String('-', width)
+    let header = names |> Array.take (int m.SX) |> String.concat " | " |> sprintf "| %s | %s |" ws
+    let sep = Seq.init (int m.SX) (fun _ -> sprintf ":%s " minuses) |> String.concat "|"
+    Log.line "%s" header
+    Log.line "| %s:|%s|" minuses sep
+    for r in 0 .. int m.SY - 1 do
+        let row = entries.GetRow(r)
+        let data = Seq.init (int row.S) (fun i -> row.[i]) |> String.concat " | "
+        Log.line "| %s | %s |" names.[r] data
 
-    let test() =
-        
-        let m =
-            Matrix(
-                [|
-                    1.0; 0.0; 0.0; 0.0; 
-                    0.0; 1.0; 0.0; 0.0; 
-                    0.0; 0.0; 1.0; 0.0; 
-                    0.0; 0.0; 0.0; 1.0; 
-                    1.0; 0.0; 0.0; 1.0; 
-                |],
-                4L, 5L
-            )
+let test() =
+    let m =
+        Matrix(
+            [|
+                1.0; 0.0; 0.0; 0.0; 
+                0.0; 1.0; 0.0; 0.0; 
+                0.0; 0.0; 1.0; 0.0; 
+                0.0; 0.0; 0.0; 1.0; 
+                1.0; 0.0; 0.0; 1.0; 
+            |],
+            4L, 5L
+        )
 
-        let b =
-            Vector([|1.0; 2.0; 3.0; 4.0; 5.0|])
-
-
-        let known = Map.ofList [1, 2.0]
+    let b =
+        Vector([|1.0; 2.0; 3.0; 4.0; 5.0|])
 
 
-        let x = m.Map(ComplexD).Solve(b.Map(ComplexD), known |> Map.map (fun _ v -> ComplexD v))
+    let known = Map.ofList [1, 2.0]
 
-        Log.start "A"
-        printMatrix m
-        Log.stop()
 
-        
-        Log.start "x"
-        printMatrix (Matrix(x.Data, x.Size, 1L))
-        Log.stop()
+    let x = m.Solve(b, known)
+
+    Log.start "A"
+    printMatrix m
+    Log.stop()
 
         
-        Log.start "b"
-        printMatrix (Matrix(b.Data, x.Size, 1L))
-        Log.stop()
+    Log.start "x"
+    printMatrix (Matrix(x.Data, 1L, x.Size))
+    Log.stop()
 
+        
+    Log.start "b"
+    printMatrix (Matrix(b.Data, 1L, b.Size))
+    Log.stop()
 
-printfn "%A" System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription
-
-SolverTest.test()
+test()
